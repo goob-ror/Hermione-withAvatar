@@ -1,0 +1,98 @@
+# ── v0 sandbox internal files ──────────────────────────────────────────────
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.design-cache/
+.v0-trash/
+.vercel/
+
+# ── Environment / secrets ──────────────────────────────────────────────────
+# Every .env flavour is ignored; only the templates are allowed through.
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.p8
+*.p12
+*.pfx
+*.key
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+.npmrc
+.pypirc
+.dockercfg
+.netrc
+
+# Local agent/provider store — may hold API tokens typed into the UI.
+.hermione/
+hermione.config.json
+
+# ── Dependencies & build output ────────────────────────────────────────────
+node_modules
+node_modules/
+.pnpm-store/
+.yarn/
+.next/
+out/
+build/
+dist/
+.turbo/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# ── Local model weights / TTS artifacts ────────────────────────────────────
+# Tailwind v4 scans non-ignored files as source, and these are huge.
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+*.pth
+*.ckpt
+*.index
+*.wav
+*.flac
+voices/
+models/
+
+# ── Logs, dumps, local databases ───────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.dump
+core
+core.*
+
+# ── Test / coverage / verification artifacts ────────────────────────────────
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+docs/verification/*.png
+
+# ── Editor & OS noise ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Local operator notes ───────────────────────────────────────────────────
+AGENTS.md
+CLAUDE.md
+TODO.local.md
+notes.local/

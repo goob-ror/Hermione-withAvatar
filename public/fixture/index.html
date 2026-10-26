@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hermione fixture</title>
+    <meta name="description" content="A tiny page used to prove the preview bridge can read, click and type." />
+    <style>
+      body { margin: 0; padding: 34px 30px; font: 15px/1.6 system-ui, sans-serif; color: #24211f; background: #f7f4f0; }
+      h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -0.02em; }
+      #intro { margin: 0 0 22px; color: #6c6560; }
+      label { display: block; margin-bottom: 12px; font-size: 13px; color: #5c5651; }
+      input { margin-left: 8px; padding: 6px 8px; border: 1px solid #d8d1c8; border-radius: 4px; font: inherit; font-size: 13px; }
+      button { padding: 7px 14px; border: 1px solid #2f2a26; border-radius: 4px; background: #2f2a26; color: #fdfbf9; font: inherit; font-size: 13px; cursor: pointer; }
+      #out { margin-top: 18px; padding: 10px 12px; background: #fffdfa; border: 1px solid #e6e0d8; border-radius: 5px; color: #4a443f; font-size: 13px; }
+      ul { margin-top: 22px; padding-left: 18px; font-size: 13px; }
+      a { color: #8a5a3c; }
+    </style>
+  </head>
+  <body>
+    <h1>Hermione fixture page</h1>
+    <p id="intro">A tiny page used to prove the preview bridge can read, click and type.</p>
+
+    <label>Name <input id="name" placeholder="type here" /></label>
+    <button id="greet">Greet</button>
+    <p id="out">not greeted yet</p>
+
+    <ul>
+      <li><a id="next" href="second.html">Go to the second page</a></li>
+    </ul>
+
+    <script>
+      document.getElementById('greet').addEventListener('click', function () {
+        var value = document.getElementById('name').value || 'nobody'
+        document.getElementById('out').textContent = 'Hello, ' + value + '!'
+      })
+    </script>
+  </body>
+</html>
