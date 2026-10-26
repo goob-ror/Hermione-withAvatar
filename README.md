@@ -27,6 +27,30 @@ Built on **Next.js 16 + React 19 + TypeScript**, integrating with Google Workspa
 - **Agent Memory**: Learns user preferences, communication style, domain expertise
 - **Context Suggestions**: Auto-suggest relevant resources from conversation
 
+### 💾 Session Management & Persistence
+- **Session History**: Browse and resume recent sessions from sidebar
+- **Persistent Storage**: Sessions automatically saved to disk (`.hermione/sessions/`)
+- **Session Continuity**: Resume existing sessions without welcome screen—only show welcome for new sessions
+- **Auto-restore**: Sessions load from disk on server restart
+- **Session Metadata**: Track message count, last activity, creation time
+
+### 🧠 Thinking & Extended Reasoning
+- **Thinking Effort Dropdown**: Control AI reasoning depth (off/low/medium/high)
+- **Token Budgets**: 0K / 2K / 5K / 10K tokens per level to prevent slow inference
+- **Extended Thinking**: Extended thinking mode when enabled
+- **Performance Optimized**: Prevents slowness from token budget caps
+
+### ⚡ Smart Caching System
+- **Multi-layer Caching**: UI state, providers, models, sessions, preferences
+- **TTL-based Expiration**: 
+  - UI state: 5 minutes
+  - Providers/models: 1-24 hours
+  - Sessions: 24 hours
+  - User preferences: 7 days
+- **localStorage Backend**: Fast, local, persistent cache
+- **Auto-cleanup**: Expired entries automatically removed
+- **Zero-cost Restarts**: Cold start with warm cache = instant availability
+
 ### 💻 Development Tools
 - **GitHub Integration**: Issues, PRs, CI status monitoring, snippet library
 - **Document Generation**: Auto-generate README, API docs, setup guides
@@ -97,6 +121,8 @@ lib/
 ├── github/         # GitHub client
 ├── context/        # Search + session restoration
 ├── memory/         # Agent learnings + user profile
+├── cache/          # Multi-layer caching system (NEW)
+├── storage/        # Session persistence
 └── dev/            # Document gen + deployment
 
 components/
@@ -111,6 +137,7 @@ app/api/
 ├── telegram/       # Bot endpoints
 ├── github/         # Issues, PRs, snippets
 ├── memory/         # Profile + learnings
+├── sessions/       # Session list & load (NEW)
 └── dev/            # Documents, workflows, deployments
 ```
 
@@ -200,10 +227,10 @@ MIT
 
 ## 📊 Implementation
 
-- **17 libraries** (~10K+ lines)
+- **18 libraries** (~11K+ lines)
 - **10 React components**
-- **13 API routes**
-- **6 storage modules**
+- **15 API routes**
+- **7 storage modules**
 - **All typecheck ✅ passing**
 
 ### Phases Completed
@@ -213,6 +240,7 @@ MIT
 ✅ Phase 4: Smart context engine + memory
 ✅ Phase 5: Development tools
 ✅ Phase 6: UI components
+✅ Phase 7: Session persistence + thinking controls + caching system
 
 ---
 
