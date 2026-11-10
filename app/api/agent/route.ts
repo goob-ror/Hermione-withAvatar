@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { runAgent, systemPromptFor } from '@/lib/agent/loop'
 import { ensureSession } from '@/lib/agent/session'
 import { agentStream } from '@/lib/agent/stream'
-import { activeProviderId, getProvider, publicProviders } from '@/lib/agent/providers'
+import {
+  activeProviderId,
+  getProvider,
+  publicProviders,
+  resolvedKey,
+  setProviderDefaultModel,
+} from '@/lib/agent/providers'
 import { listModels } from '@/lib/agent/openai'
 
 /**
@@ -14,7 +20,7 @@ export async function GET(req: NextRequest) {
   const provider = getProvider(providerId ?? activeProviderId())
 
   try {
-    const models = await listModels(provider.baseUrl, provider.apiKey, provider.kind)
+    const models = await listModels(provider.baseUrl, resolvedKey(provider), provider.kind)
     if (!models.length && provider.kind === 'ollama') {
       return NextResponse.json(
         { online: false, provider: provider.id, error: `no models at ${provider.baseUrl}` },
@@ -68,6 +74,12 @@ export async function POST(req: NextRequest) {
   if (!message.trim()) return NextResponse.json({ error: 'message is required' }, { status: 400 })
 
   const resolvedProvider = providerId ?? activeProviderId()
+  // Remember the pick so this provider reopens on the same model next time.
+  try {
+    setProviderDefaultModel(resolvedProvider, model)
+  } catch {
+    /* non-fatal */
+  }
   const prompt = await systemPromptFor(model, resolvedProvider)
   const session = ensureSession(sessionId, model, prompt, resolvedProvider)
 

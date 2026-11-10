@@ -6,9 +6,31 @@ import {
   setActiveProvider,
   deleteProvider,
   storeIsWritable,
+  resolvedKey,
   type ProviderKind,
 } from '@/lib/agent/providers'
 import { probeProvider } from '@/lib/agent/openai'
+import { CATALOG, catalogEntry, catalogForUrl } from '@/lib/agent/catalog'
+import { invalidateModelCache } from '@/lib/agent/discovery'
+
+/**
+ * Value of a catalog-known key env var, but only when `baseUrl` points at
+ * that catalog entry's own host — an env key is never sent anywhere else.
+ */
+function envNameAllowed(name: unknown, baseUrl: string): name is string {
+  if (typeof name !== 'string' || !name) return false
+  let host = ''
+  try {
+    host = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `https://${baseUrl}`).host
+  } catch {
+    return false
+  }
+  return CATALOG.some((c) => c.keyEnv?.includes(name) && new URL(c.baseUrl).host === host)
+}
+
+function catalogEnvKey(name: unknown, baseUrl: string): string | undefined {
+  return envNameAllowed(name, baseUrl) ? process.env[name]?.trim() || undefined : undefined
+}
 
 /** GET /api/providers — every configured provider, active one flagged. Never returns keys. */
 export async function GET() {
@@ -19,6 +41,17 @@ export async function GET() {
     providers,
     writable: storeIsWritable(),
     activeKind: active?.kind ?? 'ollama',
+    // Presets for the "add" form. Key env var names only, never values.
+    catalog: CATALOG.map(({ id, label, kind, scope, baseUrl, keyEnv, keyUrl, keyPlaceholder }) => ({
+      id,
+      label,
+      kind,
+      scope,
+      baseUrl,
+      keyEnv: keyEnv?.[0],
+      keyUrl,
+      keyPlaceholder,
+    })),
   })
 }
 
@@ -45,10 +78,19 @@ export async function POST(req: NextRequest) {
       kind: (body.kind === 'ollama' ? 'ollama' : 'openai') as ProviderKind,
       baseUrl,
       apiKey: typeof body.apiKey === 'string' ? body.apiKey : undefined,
+      // Only env names the catalog knows, and only for that entry's own host.
+      apiKeyEnv:
+        typeof body.apiKeyEnv === 'string'
+          ? body.apiKeyEnv === '' || envNameAllowed(body.apiKeyEnv, baseUrl)
+            ? body.apiKeyEnv
+            : undefined
+          : undefined,
+      catalogId: catalogEntry(body.catalogId)?.id ?? catalogForUrl(baseUrl)?.id,
       defaultModel: body.defaultModel ? String(body.defaultModel) : undefined,
     })
 
     if (body.activate !== false) setActiveProvider(saved.id)
+    invalidateModelCache(saved.id)
 
     const { activeId, providers } = publicProviders()
     return NextResponse.json({
@@ -91,6 +133,7 @@ export async function DELETE(req: NextRequest) {
   const id = new URL(req.url).searchParams.get('id') || ''
   if (!id) return NextResponse.json({ error: 'id query parameter is required' }, { status: 400 })
   const existed = deleteProvider(id)
+  invalidateModelCache(id)
   return NextResponse.json({ ok: true, removed: existed, ...publicProviders() })
 }
 
@@ -115,7 +158,12 @@ export async function PUT(req: NextRequest) {
   const useStoredKey = body.useStoredKey === true || (!!stored && body.apiKey === undefined)
 
   const baseUrl = String(body.baseUrl ?? stored?.baseUrl ?? '').trim()
-  const apiKey = useStoredKey ? stored?.apiKey : typeof body.apiKey === 'string' ? body.apiKey.trim() : undefined
+  const typedKey = typeof body.apiKey === 'string' && body.apiKey.trim() ? body.apiKey.trim() : undefined
+  const apiKey = useStoredKey
+    ? stored
+      ? resolvedKey(stored)
+      : undefined
+    : typedKey ?? (baseUrl ? catalogEnvKey(body.apiKeyEnv, baseUrl) : undefined)
 
   if (!baseUrl) return NextResponse.json({ error: 'baseUrl is required' }, { status: 400 })
 
@@ -128,7 +176,8 @@ export async function PUT(req: NextRequest) {
         label: stored.label,
         kind: probe.kind === 'ollama' ? 'ollama' : 'openai',
         baseUrl: probe.endpoint,
-        apiKey,
+        // Never write an env-sourced key to disk; only a key typed in this request.
+        apiKey: typedKey,
         defaultModel: stored.defaultModel || probe.models[0]?.id,
       })
     } catch {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   Check,
@@ -17,7 +17,36 @@ import {
   Wifi,
   X,
   Zap,
+  Radar,
+  Cloud,
+  ExternalLink,
 } from 'lucide-react'
+
+interface CatalogPreset {
+  id: string
+  label: string
+  kind: 'openai' | 'ollama'
+  scope: 'local' | 'cloud'
+  baseUrl: string
+  keyEnv?: string
+  keyUrl?: string
+  keyPlaceholder?: string
+}
+
+interface Discovered {
+  catalogId: string
+  label: string
+  scope: 'local' | 'cloud'
+  kind: 'ollama' | 'openai'
+  baseUrl: string
+  online: boolean
+  models: { id: string }[]
+  latencyMs: number
+  detail: string
+  keyEnv?: string
+  keyUrl?: string
+  configuredId?: string
+}
 
 export interface PublicProvider {
   id: string
@@ -26,6 +55,8 @@ export interface PublicProvider {
   baseUrl: string
   hasKey: boolean
   keyHint: string
+  keyEnv?: string
+  catalogId?: string
   defaultModel?: string
   isActive: boolean
   isDefault?: boolean
@@ -37,6 +68,7 @@ interface ProbeState {
   endpoint: string
   latencyMs: number
   models: { id: string; ownedBy?: string; context?: number }[]
+  hidden?: { id: string; reason: string }[]
   authError: boolean
   detail: string
 }
@@ -48,16 +80,22 @@ interface ProviderSettingsProps {
   onProvidersChange: (payload: { activeId: string; providers: PublicProvider[] }) => void
 }
 
-const PRESETS: { label: string; baseUrl: string; kind: 'openai' | 'ollama'; hint: string }[] = [
-  { label: 'Ollama (local)', baseUrl: 'http://127.0.0.1:11434', kind: 'ollama', hint: 'daemon root' },
-  { label: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', kind: 'openai', hint: 'local server' },
-  { label: 'llama.cpp server', baseUrl: 'http://127.0.0.1:8080/v1', kind: 'openai', hint: 'local server' },
-  { label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', kind: 'openai', hint: 'needs token' },
-  { label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', kind: 'openai', hint: 'needs token' },
-  { label: 'Custom relay', baseUrl: '', kind: 'openai', hint: 'any /v1 endpoint' },
+/** Used until the server's catalog arrives. */
+const FALLBACK_PRESETS: CatalogPreset[] = [
+  { id: 'ollama', label: 'Ollama', baseUrl: 'http://127.0.0.1:11434', kind: 'ollama', scope: 'local' },
+  { id: 'lmstudio', label: 'LM Studio', baseUrl: 'http://127.0.0.1:1234/v1', kind: 'openai', scope: 'local' },
+  { id: 'openai', label: 'OpenAI', baseUrl: 'https://api.openai.com/v1', kind: 'openai', scope: 'cloud' },
 ]
 
-const emptyForm = { id: '', label: '', kind: 'openai' as 'openai' | 'ollama', baseUrl: '', apiKey: '', defaultModel: '' }
+const emptyForm = {
+  id: '',
+  label: '',
+  kind: 'openai' as 'openai' | 'ollama',
+  baseUrl: '',
+  apiKey: '',
+  defaultModel: '',
+  catalogId: '',
+}
 
 export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvidersChange }: ProviderSettingsProps) {
   const [providers, setProviders] = useState<PublicProvider[]>([])
@@ -69,6 +107,33 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null)
   const [showKey, setShowKey] = useState(false)
+  const [catalog, setCatalog] = useState<CatalogPreset[]>(FALLBACK_PRESETS)
+  const [discovered, setDiscovered] = useState<Discovered[]>([])
+  const [scanning, setScanning] = useState(false)
+  const [adding, setAdding] = useState<string | null>(null)
+  const handleTestRef = useRef<(() => void) | null>(null)
+  // The parent passes a fresh inline callback every render. Keeping it in a ref
+  // stops `load` from changing identity, which otherwise re-fires the open
+  // effect → parent setState → new callback → infinite update loop.
+  const onProvidersChangeRef = useRef(onProvidersChange)
+  onProvidersChangeRef.current = onProvidersChange
+
+  const scan = useCallback(async (refresh = false) => {
+    setScanning(true)
+    try {
+      const res = await fetch(`/api/providers/discover${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' })
+      const data = await res.json()
+      // Show what is actually reachable: running local runtimes, and cloud APIs whose key is in the env.
+      const hits: Discovered[] = [...(data.local || []), ...(data.cloud || [])].filter(
+        (b: Discovered) => b.online || (b.scope === 'cloud' && b.detail !== 'no key in environment'),
+      )
+      setDiscovered(hits)
+    } catch {
+      setDiscovered([])
+    } finally {
+      setScanning(false)
+    }
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -76,21 +141,80 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
       const res = await fetch('/api/providers', { cache: 'no-store' })
       const data = await res.json()
       const list: PublicProvider[] = data.providers || []
+      if (Array.isArray(data.catalog) && data.catalog.length) setCatalog(data.catalog)
       setProviders(list)
-      onProvidersChange({ activeId: data.activeId, providers: list })
+      onProvidersChangeRef.current({ activeId: data.activeId, providers: list })
     } catch (err: any) {
       setMessage({ type: 'err', text: err?.message || 'could not load providers' })
     } finally {
       setLoading(false)
     }
-  }, [onProvidersChange])
+  }, [])
 
   useEffect(() => {
     if (isOpen) {
       load()
+      scan()
       setMessage(null)
     }
-  }, [isOpen, load])
+  }, [isOpen, load, scan])
+
+  /** One-click add for a detected backend. Cloud keys stay in the env — only the var name is saved. */
+  const addDiscovered = async (b: Discovered) => {
+    setAdding(b.catalogId)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: b.label,
+          kind: b.kind,
+          baseUrl: b.baseUrl,
+          catalogId: b.catalogId,
+          apiKeyEnv: b.scope === 'cloud' ? b.keyEnv : undefined,
+          defaultModel: b.models[0]?.id,
+          activate: true,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage({ type: 'err', text: data.error || 'could not add provider' })
+        return
+      }
+      setProviders(data.providers || [])
+      onProvidersChange({ activeId: data.activeId, providers: data.providers || [] })
+      setMessage({ type: 'ok', text: `${b.label} added — ${b.models.length} models available` })
+      scan(true)
+    } catch (err: any) {
+      setMessage({ type: 'err', text: err?.message || 'could not add provider' })
+    } finally {
+      setAdding(null)
+    }
+  }
+
+  const applyPreset = (preset: CatalogPreset) => {
+    setForm((f) => ({
+      ...f,
+      baseUrl: preset.baseUrl,
+      kind: preset.kind,
+      label: preset.label,
+      catalogId: preset.id,
+    }))
+    setProbe(null)
+    setMessage(null)
+  }
+
+  const activePreset = catalog.find((c) => c.id === form.catalogId)
+
+  // Pasting a key into a preset is enough: probe automatically to list its models.
+  useEffect(() => {
+    if (!isOpen || !form.apiKey.trim() || !form.baseUrl.trim()) return
+    const timer = setTimeout(() => {
+      handleTestRef.current?.()
+    }, 700)
+    return () => clearTimeout(timer)
+  }, [isOpen, form.apiKey, form.baseUrl])
 
   const resetForm = () => {
     setForm(emptyForm)
@@ -107,6 +231,7 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
       baseUrl: p.baseUrl,
       apiKey: '',
       defaultModel: p.defaultModel || '',
+      catalogId: p.catalogId || '',
     })
     setEditing(true)
     setProbe(null)
@@ -132,6 +257,8 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
           // Blank field on an existing provider = reuse the stored token.
           apiKey: form.apiKey ? form.apiKey : undefined,
           useStoredKey: editing && !form.apiKey,
+          // No key typed: the server may use the preset's env var (only for that preset's host).
+          apiKeyEnv: !form.apiKey ? activePreset?.keyEnv : undefined,
           id: editing ? form.id : undefined,
         }),
       })
@@ -157,6 +284,8 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
     }
   }
 
+  handleTestRef.current = handleTest
+
   const handleSave = async () => {
     if (!form.baseUrl.trim()) {
       setMessage({ type: 'err', text: 'Base URL is required' })
@@ -175,6 +304,8 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
           baseUrl: form.baseUrl.trim(),
           apiKey: form.apiKey ? form.apiKey : editing ? undefined : '',
           defaultModel: form.defaultModel.trim() || undefined,
+          catalogId: form.catalogId || undefined,
+          apiKeyEnv: !form.apiKey && !editing ? activePreset?.keyEnv : undefined,
           activate: true,
         }),
       })
@@ -235,7 +366,7 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
             <div>
               <h2 className="text-sm font-semibold text-white">Model providers</h2>
               <p className="text-[11px] text-zinc-500">
-                Local Ollama or any chat-completions endpoint, with an optional token
+                Local runtimes are found automatically — or add any API with a key
               </p>
             </div>
           </div>
@@ -257,6 +388,77 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {/* Auto-detected backends */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-mono flex items-center gap-1.5">
+                <Radar className="size-3" /> Detected
+              </span>
+              <button
+                onClick={() => scan(true)}
+                disabled={scanning}
+                className="text-[10px] font-mono text-zinc-500 hover:text-zinc-300 flex items-center gap-1 disabled:opacity-50"
+              >
+                {scanning ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+                {scanning ? 'scanning…' : 'rescan'}
+              </button>
+            </div>
+            {discovered.length ? (
+              <div className="grid gap-1.5 sm:grid-cols-2">
+                {discovered.map((b) => {
+                  const configured = !!b.configuredId
+                  const isActive = b.configuredId === activeProviderId
+                  return (
+                    <div
+                      key={b.catalogId}
+                      className="p-2.5 rounded-lg border border-[#252427] bg-[#151416] flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`size-1.5 rounded-full shrink-0 ${b.online ? 'bg-[#7fd6a0]' : 'bg-[#e0a2a2]'}`}
+                          />
+                          <span className="text-xs font-semibold text-white truncate">{b.label}</span>
+                          {b.scope === 'cloud' && b.keyEnv && (
+                            <span className="text-[9px] font-mono text-[#c5a871]">${b.keyEnv}</span>
+                          )}
+                        </div>
+                        <p className="text-[10px] font-mono text-zinc-500 truncate">
+                          {b.online ? `${b.models.length} models · ${b.latencyMs} ms` : b.detail}
+                        </p>
+                      </div>
+                      {isActive ? (
+                        <span className="text-[9px] font-mono text-[#d2b278] shrink-0">ACTIVE</span>
+                      ) : configured ? (
+                        <button
+                          onClick={() => handleActivate(b.configuredId!)}
+                          className="px-2 py-1 text-[10px] rounded bg-[#201e23] hover:bg-[#2b2830] text-zinc-200 border border-[#35323a] shrink-0"
+                        >
+                          Use
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => addDiscovered(b)}
+                          disabled={!b.online || adding === b.catalogId}
+                          className="px-2 py-1 text-[10px] rounded bg-[#c5a871] hover:bg-[#d4bb87] disabled:opacity-40 text-black font-medium shrink-0 flex items-center gap-1"
+                        >
+                          {adding === b.catalogId ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+                          Add
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <p className="text-[11px] text-zinc-600 font-mono px-1">
+                {scanning
+                  ? 'Looking for Ollama, LM Studio, llama.cpp, vLLM, Jan… and API keys in the environment'
+                  : 'Nothing running locally and no API keys in the environment. Start a local runtime or add an API below.'}
+              </p>
+            )}
+          </div>
+
           {/* Saved providers */}
           <div className="space-y-2">
             <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-mono">Configured</span>
@@ -342,26 +544,57 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
             </div>
 
             {/* Presets */}
-            <div className="flex flex-wrap gap-1.5">
-              {PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  onClick={() => {
-                    setForm((f) => ({
-                      ...f,
-                      baseUrl: preset.baseUrl,
-                      kind: preset.kind,
-                      label: f.label || preset.label,
-                    }))
-                    setProbe(null)
-                  }}
-                  className="px-2 py-1 text-[10px] font-mono rounded border border-[#302d36] bg-[#1a181d] hover:border-[#4a4356] text-zinc-300 transition-colors"
-                  title={preset.hint}
+            {(['cloud', 'local'] as const).map((scope) => (
+              <div key={scope} className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-mono text-zinc-600 w-14 shrink-0 flex items-center gap-1">
+                  {scope === 'cloud' ? <Cloud className="size-3" /> : <Cpu className="size-3" />}
+                  {scope === 'cloud' ? 'API' : 'local'}
+                </span>
+                {catalog
+                  .filter((preset) => preset.scope === scope)
+                  .map((preset) => (
+                    <button
+                      key={preset.id}
+                      onClick={() => applyPreset(preset)}
+                      className={`px-2 py-1 text-[10px] font-mono rounded border transition-colors ${
+                        form.catalogId === preset.id
+                          ? 'border-[#8a724b] bg-[#1e1c18] text-[#d2b278]'
+                          : 'border-[#302d36] bg-[#1a181d] hover:border-[#4a4356] text-zinc-300'
+                      }`}
+                      title={preset.baseUrl}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                {scope === 'cloud' && (
+                  <button
+                    onClick={() => applyPreset({ id: '', label: '', kind: 'openai', scope: 'cloud', baseUrl: '' })}
+                    className="px-2 py-1 text-[10px] font-mono rounded border border-dashed border-[#302d36] text-zinc-500 hover:text-zinc-300"
+                    title="Any OpenAI-compatible /v1 endpoint"
+                  >
+                    custom…
+                  </button>
+                )}
+              </div>
+            ))}
+            {activePreset?.keyUrl && (
+              <p className="text-[10px] text-zinc-500 flex items-center gap-1">
+                Paste a {activePreset.label} key — models load automatically.
+                <a
+                  href={activePreset.keyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[#d2b278] hover:underline inline-flex items-center gap-0.5"
                 >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
+                  get a key <ExternalLink className="size-2.5" />
+                </a>
+                {activePreset.keyEnv && (
+                  <span className="text-zinc-600">
+                    · or set <code>{activePreset.keyEnv}</code> in <code>.env</code>
+                  </span>
+                )}
+              </p>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -418,7 +651,11 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
                     type={showKey ? 'text' : 'password'}
                     value={form.apiKey}
                     onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
-                    placeholder={editing ? 'leave blank to keep the saved token' : 'sk-… (optional)'}
+                    placeholder={
+                      editing
+                        ? 'leave blank to keep the saved token'
+                        : `${activePreset?.keyPlaceholder || 'sk-…'}${activePreset?.scope === 'cloud' ? '' : ' (optional)'}`
+                    }
                     spellCheck={false}
                     autoComplete="off"
                     className={`${inputClass} pl-8 pr-16`}
@@ -511,7 +748,15 @@ export function ProviderSettings({ isOpen, onClose, activeProviderId, onProvider
                       {probe.ok ? 'reachable' : 'failed'}
                     </span>
                     <span className="text-zinc-500">{probe.latencyMs} ms</span>
-                    <span className="text-zinc-500">{probe.models.length} models</span>
+                    <span className="text-zinc-500">{probe.models.length} chat models</span>
+                    {!!probe.hidden?.length && (
+                      <span
+                        className="text-zinc-600"
+                        title={probe.hidden.map((h) => `${h.id} — ${h.reason}`).join('\n')}
+                      >
+                        +{probe.hidden.length} non-chat hidden
+                      </span>
+                    )}
                   </span>
                 </div>
                 {probe.models.length > 0 ? (

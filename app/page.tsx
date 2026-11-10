@@ -246,23 +246,27 @@ async function consumeStream(response: Response, onEvent: (event: any) => void) 
 }
 
 export default function Page() {
-  // Load UI state from cache with fallback to defaults
-  const cachedUIState = typeof window !== 'undefined' ? getCachedUIState() : null
+  // First render uses defaults on BOTH server and client so hydration matches;
+  // the localStorage cache is applied right after mount (see the restore effect).
   const defaultUIState = getDefaultUIState()
-  
-  const [preview, setPreview] = useState(cachedUIState?.preview ?? defaultUIState.preview)
+
+  const [preview, setPreview] = useState(defaultUIState.preview)
   const [input, setInput] = useState('')
-  const [activeModel, setActiveModel] = useState(cachedUIState?.activeModel ?? defaultUIState.activeModel)
+  const [activeModel, setActiveModel] = useState(defaultUIState.activeModel)
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [thinkingEffort, setThinkingEffort] = useState<'off' | 'low' | 'medium' | 'high'>(
-    cachedUIState?.thinkingEffort ?? defaultUIState.thinkingEffort
+    defaultUIState.thinkingEffort
   )
   const [isModelModalOpen, setIsModelModalOpen] = useState(false)
   const [isProviderModalOpen, setIsProviderModalOpen] = useState(false)
   const [providers, setProviders] = useState<PublicProvider[]>([])
   const [activeProviderId, setActiveProviderId] = useState('')
+  /** Every configured provider with its live model list — feeds the grouped picker. */
+  const [modelGroups, setModelGroups] = useState<
+    { providerId: string; label: string; scope: 'local' | 'cloud'; online: boolean; models: { id: string }[] }[]
+  >([])
   const [companionState, setCompanionState] = useState<'idle' | 'focused' | 'alert'>(
-    cachedUIState?.companionState ?? defaultUIState.companionState
+    defaultUIState.companionState
   )
   const [isStreaming, setIsStreaming] = useState(false)
   const [sessionId, setSessionId] = useState(() => {
@@ -286,7 +290,7 @@ export default function Page() {
   const [isLoadingSessions, setIsLoadingSessions] = useState(false)
 
   /* Shared terminal — one shell per session, driven by both sides. */
-  const [isTerminalOpen, setIsTerminalOpen] = useState(cachedUIState?.isTerminalOpen ?? defaultUIState.isTerminalOpen)
+  const [isTerminalOpen, setIsTerminalOpen] = useState(defaultUIState.isTerminalOpen)
   const [lastAgentCommand, setLastAgentCommand] = useState<{ command: string; at: number } | null>(null)
 
   /* Consent surfaces. */
@@ -317,13 +321,7 @@ export default function Page() {
   const [currentTime, setCurrentTime] = useState(new Date());
 
   /* Preview width — drag the handle on the panel's left edge (double-click resets). */
-  const [previewWidth, setPreviewWidth] = useState(() => {
-    if (typeof window !== 'undefined') {
-      const cached = getCachedUIState()
-      return cached?.previewWidth ?? 370
-    }
-    return 370
-  })
+  const [previewWidth, setPreviewWidth] = useState(370)
   const dragRef = useRef<{ startX: number; startW: number } | null>(null)
 
   const clampWidth = (w: number) => Math.max(300, Math.min(w, Math.max(320, window.innerWidth - 720)))
@@ -347,6 +345,19 @@ export default function Page() {
     }
 
     return () => clearInterval(interval);
+  }, [])
+
+  // Restore cached UI state after hydration. Declared before the persist
+  // effect so the defaults never overwrite the cache on first load.
+  useEffect(() => {
+    const cached = getCachedUIState()
+    if (!cached) return
+    if (cached.preview !== undefined) setPreview(cached.preview)
+    if (cached.activeModel) setActiveModel(cached.activeModel)
+    if (cached.thinkingEffort) setThinkingEffort(cached.thinkingEffort)
+    if (cached.companionState) setCompanionState(cached.companionState)
+    if (cached.isTerminalOpen !== undefined) setIsTerminalOpen(cached.isTerminalOpen)
+    if (cached.previewWidth) setPreviewWidth(cached.previewWidth)
   }, [])
 
   // Persist UI state changes to cache (debounced)
@@ -590,7 +601,12 @@ export default function Page() {
       setAvailableModels(names)
       if (data.providers) setProviders(data.providers)
       if (data.activeId) setActiveProviderId(data.activeId)
-      if (names.length) setActiveModel((current) => (names.includes(current) ? current : names[0]))
+      // Keep the current model if this provider has it, else the provider's remembered pick, else the first.
+      const remembered: string | undefined = (data.providers || []).find((p: any) => p.id === data.provider)?.defaultModel
+      if (names.length)
+        setActiveModel((current) =>
+          names.includes(current) ? current : remembered && names.includes(remembered) ? remembered : names[0],
+        )
       
       // Cache the models
       if (pid && data.models) {
@@ -613,8 +629,52 @@ export default function Page() {
     loadModels()
   }, [loadModels])
 
+  /** Models from every configured provider (local + API), for the grouped picker. */
+  const loadModelGroups = useCallback(async (refresh = false) => {
+    try {
+      const res = await fetch(`/api/models/available${refresh ? '?refresh=1' : ''}`, { cache: 'no-store' })
+      const data = await res.json()
+      if (Array.isArray(data.groups)) setModelGroups(data.groups)
+    } catch {
+      /* picker falls back to the active provider's list */
+    }
+  }, [])
+
+  useEffect(() => {
+    loadModelGroups()
+  }, [loadModelGroups, providers.length])
+
+  /** Pick a model from any provider; switches the active provider when needed. */
+  const selectModel = useCallback(
+    async (providerId: string, model: string) => {
+      setActiveModel(model)
+      if (providerId && providerId !== activeProviderId) {
+        setActiveProviderId(providerId)
+        try {
+          const res = await fetch('/api/providers', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ activeId: providerId }),
+          })
+          const data = await res.json()
+          if (res.ok && data.providers) setProviders(data.providers)
+        } catch {
+          /* the per-turn providerId still routes the request correctly */
+        }
+      }
+    },
+    [activeProviderId],
+  )
+
   const applyEvent = (event: any) => {
     const index = agentIndexRef.current
+
+    // The server hid a model that can't chat — refresh the pickers so it disappears.
+    if (event.type === 'error' && typeof event.message === 'string' && event.message.includes('[model-hidden]')) {
+      event = { ...event, message: event.message.replace('[model-hidden]', '').trim() }
+      loadModels()
+      loadModelGroups(true)
+    }
 
     // Preview events are side effects on the panel, not transcript content.
     if (event.type === 'preview_ready') {
@@ -1273,11 +1333,41 @@ export default function Page() {
                 {/* Model Selector Dropdown */}
                 <div className="relative flex items-center">
                   <select
-                    value={activeModel}
-                    onChange={(e) => setActiveModel(e.target.value)}
-                    className="bg-[#18161a] hover:bg-[#201d24] text-[#dedbd7] text-[11px] font-mono pl-2 pr-6 py-1 rounded border border-[#2e2a33] focus:outline-none cursor-pointer appearance-none"
+                    value={modelGroups.some((g) => g.models.length) ? `${activeProviderId}::${activeModel}` : activeModel}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      if (value === '__manage__') {
+                        setIsProviderModalOpen(true)
+                        return
+                      }
+                      const split = value.indexOf('::')
+                      if (split > 0) selectModel(value.slice(0, split), value.slice(split + 2))
+                      else setActiveModel(value)
+                    }}
+                    title="Models from every provider — local runtimes and APIs"
+                    className="bg-[#18161a] hover:bg-[#201d24] text-[#dedbd7] text-[11px] font-mono pl-2 pr-6 py-1 rounded border border-[#2e2a33] focus:outline-none cursor-pointer appearance-none max-w-56 truncate"
                   >
-                    {availableModels.length > 0 ? (
+                    {modelGroups.some((g) => g.models.length) ? (
+                      <>
+                        {/* Keep the current pick selectable even if its provider is momentarily offline. */}
+                        {!modelGroups.some(
+                          (g) => g.providerId === activeProviderId && g.models.some((m) => m.id === activeModel),
+                        ) && <option value={`${activeProviderId}::${activeModel}`}>{activeModel}</option>}
+                        {modelGroups.map((g) => (
+                          <optgroup
+                            key={g.providerId}
+                            label={`${g.scope === 'local' ? '⌂' : '☁'} ${g.label}${g.online ? '' : ' — offline'}`}
+                          >
+                            {g.models.map((m) => (
+                              <option key={`${g.providerId}::${m.id}`} value={`${g.providerId}::${m.id}`}>
+                                {m.id}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                        <option value="__manage__">+ Add model / provider…</option>
+                      </>
+                    ) : availableModels.length > 0 ? (
                       availableModels.map((m) => (
                         <option key={m} value={m}>
                           {m}
@@ -1451,11 +1541,15 @@ export default function Page() {
       {/* Provider settings (custom endpoint + token) */}
       <ProviderSettings
         isOpen={isProviderModalOpen}
-        onClose={() => setIsProviderModalOpen(false)}
+        onClose={() => {
+          setIsProviderModalOpen(false)
+          loadModelGroups(true)
+        }}
         activeProviderId={activeProviderId}
         onProvidersChange={({ activeId, providers: next }) => {
           setActiveProviderId(activeId)
           setProviders(next)
+          loadModelGroups()
           // Reload the model list for the newly active provider right away.
           loadModels(activeId)
         }}

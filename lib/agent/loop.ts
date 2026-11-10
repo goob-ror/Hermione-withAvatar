@@ -1,8 +1,13 @@
 import { TOOL_MAP, isKnownTool, toolSchemas, textToolProtocol } from '@/lib/tools'
 import { agentRoot } from './paths'
 import { touch, persistSession, type Session } from './session'
-import { activeProviderId, getProvider, type Provider } from './providers'
+import { activeProviderId, getProvider, resolvedKey, type Provider } from './providers'
 import { openaiChat } from './openai'
+import { isNotChatCapableError, markUnusable } from './modelFilter'
+import { invalidateModelCache } from './discovery'
+
+/** Tag on the error text so the UI knows to refresh its model list. */
+export const MODEL_UNUSABLE_MARKER = '[model-hidden]'
 import type { AgentEvent, ChatMessage, Emit, OllamaToolCall, ToolCall, ThinkingEffort } from './types'
 
 const OLLAMA_HOST = (process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/+$/, '')
@@ -209,7 +214,7 @@ async function chatTurn(
   const turn = await openaiChat(
     {
       baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey,
+      apiKey: resolvedKey(provider),
       model,
       messages,
       tools: opts.nativeTools ? toolSchemas() : undefined,
@@ -416,6 +421,15 @@ async function loopRounds(session: Session, opts: RunOptions, emit: Emit): Promi
           session.messages[0] = { role: 'system', content: buildSystemPrompt({ nativeTools: false }) }
         }
         continue
+      }
+      if (isNotChatCapableError(message)) {
+        // Remember it so the picker stops offering this model on this provider.
+        markUnusable(provider.baseUrl, session.model, message.replace(/\s+/g, ' ').slice(0, 200))
+        invalidateModelCache(provider.id)
+        throw new Error(
+          `${session.model} can't be used for chat on ${provider.label} — the provider says it does not support multi-turn chat. ` +
+            `It has been hidden from the model picker; choose another model. ${MODEL_UNUSABLE_MARKER}`,
+        )
       }
       throw err
     }

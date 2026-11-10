@@ -26,6 +26,10 @@ export interface Provider {
   baseUrl: string
   /** Write-only field: accepted on save, never echoed back. */
   apiKey?: string
+  /** Read the key from this env var at call time instead of storing it (e.g. OPENAI_API_KEY). */
+  apiKeyEnv?: string
+  /** Catalog entry this provider was created from (see catalog.ts). */
+  catalogId?: string
   defaultModel?: string
   createdAt: number
   updatedAt: number
@@ -39,6 +43,9 @@ export interface ProviderPublic {
   hasKey: boolean
   /** Masked hint so the operator can tell two keys apart without seeing them. */
   keyHint: string
+  /** Name of the env var supplying the key, when the key is not stored. */
+  keyEnv?: string
+  catalogId?: string
   defaultModel?: string
   isActive: boolean
   isDefault?: boolean
@@ -133,6 +140,13 @@ export function getProvider(id?: string | null): Provider {
   return active ?? all[0] ?? defaultProvider()
 }
 
+/** The key to send: the stored one, else the env var it points at. */
+export function resolvedKey(p: Provider): string | undefined {
+  if (p.apiKey) return p.apiKey
+  if (p.apiKeyEnv) return process.env[p.apiKeyEnv]?.trim() || undefined
+  return undefined
+}
+
 export interface ProviderInput {
   id?: string
   label?: string
@@ -140,6 +154,9 @@ export interface ProviderInput {
   baseUrl: string
   /** `undefined` = keep the stored key, empty string = clear it. */
   apiKey?: string
+  /** `undefined` = keep, empty string = clear. */
+  apiKeyEnv?: string
+  catalogId?: string
   defaultModel?: string
 }
 
@@ -147,9 +164,18 @@ export function normalizeBaseUrl(raw: string, kind: ProviderKind): string {
   let url = (raw || '').trim().replace(/\/+$/, '')
   if (!url) throw new Error('baseUrl is required')
   if (!/^https?:\/\//i.test(url)) url = `http://${url}`
-  // Ollama is addressed at its daemon root; everything else wants /v1.
-  if (kind === 'openai' && !/\/(v\d+[a-z]*|api\/chat|chat\/completions)$/i.test(url)) {
-    url = `${url}/v1`
+  // Ollama is addressed at its daemon root; everything else wants /v1 —
+  // but only a bare host gets it appended. A URL that already has a path
+  // (`/v1beta/openai`, `/api/v1`, `/inference/v1`) is taken as given.
+  if (kind === 'openai') {
+    url = url.replace(/\/chat\/completions$/i, '')
+    let pathname = '/'
+    try {
+      pathname = new URL(url).pathname
+    } catch {
+      throw new Error(`invalid baseUrl: ${raw}`)
+    }
+    if (pathname === '/' || pathname === '') url = `${url}/v1`
   }
   return url.replace(/\/+$/, '')
 }
@@ -185,6 +211,9 @@ export function upsertProvider(input: ProviderInput): Provider {
     kind,
     baseUrl,
     apiKey: apiKey || undefined,
+    apiKeyEnv:
+      typeof input.apiKeyEnv === 'string' ? input.apiKeyEnv.trim() || undefined : existing?.apiKeyEnv,
+    catalogId: input.catalogId || existing?.catalogId,
     defaultModel: (input.defaultModel || existing?.defaultModel || '').trim() || undefined,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
@@ -197,6 +226,16 @@ export function upsertProvider(input: ProviderInput): Provider {
   if (!file.providers.some((p) => p.id === file.activeId)) file.activeId = provider.id
   writeRaw(file)
   return provider
+}
+
+/** Remember the model last picked for a provider, so switching back restores it. */
+export function setProviderDefaultModel(id: string, model: string) {
+  const file = readRaw()
+  const hit = file.providers.find((p) => p.id === id)
+  if (!hit || !model || hit.defaultModel === model) return
+  hit.defaultModel = model
+  hit.updatedAt = Date.now()
+  writeRaw(file)
 }
 
 export function setActiveProvider(id: string): Provider {
@@ -232,8 +271,10 @@ export function publicView(p: Provider, activeId: string): ProviderPublic {
     label: p.label,
     kind: p.kind,
     baseUrl: p.baseUrl,
-    hasKey: !!p.apiKey,
-    keyHint: keyHint(p.apiKey),
+    hasKey: !!resolvedKey(p),
+    keyHint: p.apiKey ? keyHint(p.apiKey) : p.apiKeyEnv ? `$${p.apiKeyEnv}` : '',
+    keyEnv: p.apiKey ? undefined : p.apiKeyEnv,
+    catalogId: p.catalogId,
     defaultModel: p.defaultModel,
     isActive: p.id === activeId,
     isDefault: p.id === defaultProvider().id,

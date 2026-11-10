@@ -1,4 +1,5 @@
 import type { ChatMessage, Emit } from './types'
+import { hiddenReason } from './modelFilter'
 
 /**
  * OpenAI-compatible transport.
@@ -42,14 +43,30 @@ export interface ProbeResult {
   endpoint: string
   latencyMs: number
   models: ModelEntry[]
+  /** Listed by the provider but filtered out because they cannot chat. */
+  hidden: HiddenModel[]
   authError: boolean
   detail: string
 }
 
-function authHeaders(apiKey?: string): Record<string, string> {
+function authHeaders(apiKey?: string, url?: string): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+  // Anthropic's OpenAI-compatible chat path takes a bearer token, but its
+  // /v1/models listing only accepts the native headers — send both.
+  if (apiKey && url && /(^|\.)anthropic\.com/i.test(safeHost(url))) {
+    headers['x-api-key'] = apiKey
+    headers['anthropic-version'] = '2023-06-01'
+  }
   return headers
+}
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host
+  } catch {
+    return ''
+  }
 }
 
 /** Strip a trailing /chat/completions or /models when the operator pasted a full URL. */
@@ -69,29 +86,86 @@ function candidates(baseUrl: string): string[] {
   return [...new Set(out)]
 }
 
-function parseModels(payload: any): ModelEntry[] {
-  const raw: any[] = Array.isArray(payload)
+function rawList(payload: any): any[] {
+  return Array.isArray(payload)
     ? payload
     : Array.isArray(payload?.data)
       ? payload.data
       : Array.isArray(payload?.models)
         ? payload.models
         : []
+}
 
+function itemId(item: any): string {
+  let id =
+    typeof item === 'string' ? item : (item?.id ?? item?.name ?? item?.model ?? item?.slug ?? '').toString()
+  // Gemini lists `models/gemini-…` but its chat endpoint wants the bare id.
+  if (id.startsWith('models/')) id = id.slice('models/'.length)
+  return id
+}
+
+export interface HiddenModel {
+  id: string
+  reason: string
+}
+
+/**
+ * Parse a model list and split it into chat-capable models and the ones
+ * hidden because they cannot chat (embeddings, TTS, image gen, …).
+ * `extraMeta` lets a caller merge richer metadata keyed by id (Gemini native list).
+ */
+function parseModels(
+  payload: any,
+  baseUrl?: string,
+  extraMeta?: Map<string, any>,
+): { models: ModelEntry[]; hidden: HiddenModel[] } {
   const models: ModelEntry[] = []
-  for (const item of raw) {
-    const id =
-      typeof item === 'string'
-        ? item
-        : (item?.id ?? item?.name ?? item?.model ?? item?.slug ?? '').toString()
+  const hidden: HiddenModel[] = []
+  for (const item of rawList(payload)) {
+    const id = itemId(item)
     if (!id) continue
+    const meta = extraMeta?.get(id) ?? item
+    const reason = hiddenReason(meta, id, baseUrl)
+    if (reason) {
+      hidden.push({ id, reason })
+      continue
+    }
     models.push({
       id,
       ownedBy: item?.owned_by ?? item?.ownedBy ?? undefined,
-      context: item?.context_length ?? item?.context_window ?? item?.details?.context_length ?? undefined,
+      context:
+        item?.context_length ?? item?.context_window ?? item?.details?.context_length ?? meta?.inputTokenLimit ?? undefined,
     })
   }
-  return models.sort((a, b) => a.id.localeCompare(b.id))
+  return {
+    models: models.sort((a, b) => a.id.localeCompare(b.id)),
+    hidden: hidden.sort((a, b) => a.id.localeCompare(b.id)),
+  }
+}
+
+/**
+ * Gemini's OpenAI-compatible /models omits capabilities; its native list has
+ * `supportedGenerationMethods`. Key goes in a header, never the URL.
+ */
+async function geminiNativeMeta(root: string, apiKey: string | undefined, timeoutMs: number): Promise<Map<string, any> | undefined> {
+  if (!apiKey || !/generativelanguage\.googleapis\.com/i.test(safeHost(root))) return undefined
+  try {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000', {
+      headers: { 'x-goog-api-key': apiKey },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return undefined
+    const body = await res.json().catch(() => null)
+    const map = new Map<string, any>()
+    for (const item of rawList(body)) {
+      const id = itemId(item)
+      if (id) map.set(id, item)
+    }
+    return map.size ? map : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -113,7 +187,7 @@ export async function probeProvider(baseUrl: string, apiKey?: string, timeoutMs 
     let authRejectedHere = false
     try {
       const res = await fetch(modelsUrl, {
-        headers: authHeaders(apiKey),
+        headers: authHeaders(apiKey, modelsUrl),
         cache: 'no-store',
         signal: AbortSignal.timeout(timeoutMs),
       })
@@ -128,16 +202,18 @@ export async function probeProvider(baseUrl: string, apiKey?: string, timeoutMs 
       }
       if (res.ok) {
         const body = await res.json().catch(() => null)
-        const models = parseModels(body)
-        if (models.length || body) {
+        const extra = await geminiNativeMeta(root, apiKey, timeoutMs)
+        const { models, hidden } = parseModels(body, root, extra)
+        if (models.length || hidden.length || body) {
           return {
             ok: true,
             kind: 'openai',
             endpoint: root,
             latencyMs: Date.now() - started,
             models,
+            hidden,
             authError: false,
-            detail: `${models.length} model${models.length === 1 ? '' : 's'} available`,
+            detail: countDetail(models.length, hidden.length, 'model'),
           }
         }
       }
@@ -155,15 +231,16 @@ export async function probeProvider(baseUrl: string, apiKey?: string, timeoutMs 
     try {
       const res = await fetch(tagsUrl, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) })
       if (res.ok) {
-        const models = parseModels(await res.json().catch(() => null))
+        const { models, hidden } = parseModels(await res.json().catch(() => null), root)
         return {
           ok: true,
           kind: 'ollama',
           endpoint: root,
           latencyMs: Date.now() - started,
           models,
+          hidden,
           authError: false,
-          detail: `${models.length} local model${models.length === 1 ? '' : 's'}`,
+          detail: countDetail(models.length, hidden.length, 'local model'),
         }
       }
     } catch {
@@ -177,9 +254,15 @@ export async function probeProvider(baseUrl: string, apiKey?: string, timeoutMs 
     endpoint: reportedEndpoint || tried,
     latencyMs: Date.now() - started,
     models: [],
+    hidden: [],
     authError,
     detail: lastDetail,
   }
+}
+
+function countDetail(shown: number, hidden: number, noun: string): string {
+  const base = `${shown} chat ${noun}${shown === 1 ? '' : 's'}`
+  return hidden ? `${base} (${hidden} non-chat hidden)` : base
 }
 
 /** List models for a saved provider config (no throw, empty list on failure). */
@@ -188,7 +271,7 @@ export async function listModels(baseUrl: string, apiKey?: string, kind: 'ollama
     const root = endpointRoot(baseUrl).replace(/\/v1$/i, '')
     try {
       const res = await fetch(`${root}/api/tags`, { cache: 'no-store', signal: AbortSignal.timeout(10000) })
-      if (res.ok) return parseModels(await res.json().catch(() => null))
+      if (res.ok) return parseModels(await res.json().catch(() => null), root).models
     } catch {
       /* fall through to the OpenAI probe */
     }
@@ -269,7 +352,7 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: authHeaders(opts.apiKey),
+    headers: authHeaders(opts.apiKey, url),
     body: JSON.stringify(payload),
     signal: opts.signal ?? AbortSignal.timeout(180_000),
   })
