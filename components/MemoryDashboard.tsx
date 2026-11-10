@@ -50,13 +50,7 @@ export default function MemoryDashboard({ open, onClose }: MemoryDashboardProps)
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState<'profile' | 'agent'>('profile')
 
-  useEffect(() => {
-    if (open) {
-      loadMemory()
-    }
-  }, [open])
-
-  const loadMemory = async () => {
+  async function loadMemory() {
     try {
       const [userRes, agentRes] = await Promise.all([
         fetch('/api/memory?action=user-profile'),
@@ -74,6 +68,12 @@ export default function MemoryDashboard({ open, onClose }: MemoryDashboardProps)
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (open) {
+      loadMemory()
+    }
+  }, [open])
 
   if (!open) return null
 

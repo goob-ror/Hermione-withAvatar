@@ -12,6 +12,34 @@ import {
 import { probeProvider } from '@/lib/agent/openai'
 import { CATALOG, catalogEntry, catalogForUrl } from '@/lib/agent/catalog'
 import { invalidateModelCache } from '@/lib/agent/discovery'
+import { z } from 'zod'
+import { id as nonEmpty, parseBody } from '@/lib/http/validate'
+
+const Kind = z.enum(['ollama', 'openai'])
+
+/** Save (create/update) a provider. Empty apiKey clears the stored key; omitted keeps it. */
+const SaveBody = z.object({
+  id: nonEmpty().optional(),
+  label: z.string().max(100).optional(),
+  kind: Kind.optional(),
+  baseUrl: nonEmpty(2000),
+  apiKey: z.string().max(4000).optional(),
+  apiKeyEnv: z.string().max(100).optional(),
+  catalogId: z.string().max(50).optional(),
+  defaultModel: z.string().max(200).optional(),
+  activate: z.boolean().optional(),
+})
+
+/** Probe an endpoint (saved provider by id, or an unsaved URL + key). */
+const ProbeBody = z.object({
+  id: z.string().max(200).optional(),
+  baseUrl: z.string().max(2000).optional(),
+  kind: Kind.optional(),
+  apiKey: z.string().max(4000).optional(),
+  apiKeyEnv: z.string().max(100).optional(),
+  useStoredKey: z.boolean().optional(),
+  persist: z.boolean().optional(),
+})
 
 /**
  * Value of a catalog-known key env var, but only when `baseUrl` points at
@@ -61,15 +89,10 @@ export async function GET() {
  * An empty `apiKey` clears the stored token; omitting it keeps the current one.
  */
 export async function POST(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
-  }
-
-  const baseUrl = String(body.baseUrl ?? '').trim()
-  if (!baseUrl) return NextResponse.json({ error: 'baseUrl is required' }, { status: 400 })
+  const parsed = await parseBody(req, SaveBody)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
+  const baseUrl = body.baseUrl
 
   try {
     const saved = upsertProvider({
@@ -109,14 +132,9 @@ export async function POST(req: NextRequest) {
  * Body: { activeId }
  */
 export async function PATCH(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
-  }
-  const id = String(body.activeId ?? '').trim()
-  if (!id) return NextResponse.json({ error: 'activeId is required' }, { status: 400 })
+  const parsed = await parseBody(req, z.object({ activeId: nonEmpty() }))
+  if (!parsed.ok) return parsed.response
+  const id = parsed.data.activeId
   try {
     setActiveProvider(id)
     return NextResponse.json({ ok: true, ...publicProviders() })
@@ -146,12 +164,9 @@ export async function DELETE(req: NextRequest) {
  * probe succeeds, the resolved endpoint + model list are written to the store.
  */
 export async function PUT(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
-  }
+  const parsed = await parseBody(req, ProbeBody)
+  if (!parsed.ok) return parsed.response
+  const body = parsed.data
 
   const id = body.id ? String(body.id) : ''
   const stored = id ? getProvider(id) : undefined

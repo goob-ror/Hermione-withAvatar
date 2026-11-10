@@ -16,48 +16,30 @@ const ACT_COMMANDS = [
   'url',
 ] as const
 
+/** Bridge commands that only read the page — no clicks, no typing, no navigation. */
+const READ_ONLY_COMMANDS = new Set<string>(['query', 'count', 'text', 'links', 'title', 'url'])
+
 export const pageOpen: ToolDef = {
   name: 'page_open',
   description:
-    'Open a URL in the preview panel. The page is fetched, distilled to readable text, and rendered in an iframe the agent can then act on. Domain must be allowlisted. Requires approval.',
+    'Show a public web page in the preview panel so the operator can watch, and so page_act can click/type on it. To just READ a page, web_fetch is lighter. Public internet only (no localhost / LAN). Runs automatically.',
   group: 'browse',
-  tier: 'confirm',
+  // Auto, public only: the page renders sandboxed (opaque origin) and proxy.ts
+  // refuses its API calls, so a hostile page can't reach Hermione or this machine.
+  tier: 'auto',
   parameters: {
     type: 'object',
     properties: {
-      url: { type: 'string', description: 'Absolute http(s) URL' },
+      url: { type: 'string', description: 'Absolute http(s) URL on the public internet' },
       max_chars: { type: 'number', description: 'Cap the distilled text (default 12000)' },
-      acknowledged: {
-        type: 'boolean',
-        description: 'Set true only after the operator approved this host in the visit modal. The gate is bypassed for this host in this session.',
-      },
     },
     required: ['url'],
   },
   async run(args, ctx) {
     const result = await openPage(ctx.sessionId, String(args.url ?? ''), {
       maxChars: Number(args.max_chars) || undefined,
-      acknowledged: args.acknowledged === true,
+      publicOnly: true,
     })
-
-    // The consent gate stopped the run. Tell the client to raise the modal; the
-    // operator's answer comes back as a fresh call with `acknowledged: true`.
-    if (result.blocked && result.consentRequired) {
-      ctx.emit({
-        type: 'visit_request',
-        url: String(args.url ?? ''),
-        host: result.host ?? '',
-        approved: false,
-        reason: 'first visit to this host in this session',
-      })
-      return {
-        ok: false,
-        output:
-          `BLOCKED by the visit gate: this session has not approved ${result.host}. ` +
-          'The operator is being asked now. Do not retry this call — wait for the operator to approve, ' +
-          'then either continue or call page_open again with acknowledged set to true.',
-      }
-    }
 
     if (result.ok && result.page) {
       ctx.emit({
@@ -111,9 +93,11 @@ export const pageRead: ToolDef = {
 export const pageAct: ToolDef = {
   name: 'page_act',
   description:
-    'Act on the page in the preview panel: click an element (by CSS selector or visible text), fill an input, submit a form, scroll, query elements, or read live text/links. Runs in the browser and returns what actually happened. Requires approval.',
+    'Act on the page in the preview panel: click an element (by CSS selector or visible text), fill an input, submit a form, scroll, query elements, or read live text/links. Read commands (text, query, count, title, links, url) run automatically; click, fill, submit and scroll need approval.',
   group: 'browse',
   tier: 'confirm',
+  // Reading the rendered page is as harmless as page_read; changing it is not.
+  needsApproval: (args) => !READ_ONLY_COMMANDS.has(String(args.command ?? '').trim()),
   parameters: {
     type: 'object',
     properties: {

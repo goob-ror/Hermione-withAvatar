@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { runAgent, systemPromptFor } from '@/lib/agent/loop'
-import { ensureSession } from '@/lib/agent/session'
+import { ensureSession, getSession, parseMode } from '@/lib/agent/session'
 import { agentStream } from '@/lib/agent/stream'
 import {
   activeProviderId,
@@ -10,6 +10,8 @@ import {
   setProviderDefaultModel,
 } from '@/lib/agent/providers'
 import { listModels } from '@/lib/agent/openai'
+import { z } from 'zod'
+import { id, Mode, parseBody, ThinkingEffort } from '@/lib/http/validate'
 
 /**
  * GET /api/agent — health of the ACTIVE provider plus its model list.
@@ -55,23 +57,20 @@ export async function GET(req: NextRequest) {
  * Body: { sessionId, model, message, thinkingEffort?, providerId? }
  * Returns an NDJSON stream of AgentEvent objects.
  */
+const AgentBody = z.object({
+  sessionId: id(),
+  model: id(),
+  message: z.string().max(100_000).refine((s) => s.trim().length > 0, 'message is required'),
+  thinkingEffort: ThinkingEffort.default('low'),
+  providerId: id().optional(),
+  mode: Mode.optional(),
+})
+
 export async function POST(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
-  }
-
-  const sessionId = String(body.sessionId ?? '').trim()
-  const model = String(body.model ?? '').trim()
-  const message = String(body.message ?? '')
-  const thinkingEffort = body.thinkingEffort ?? 'low'
-  const providerId = body.providerId ? String(body.providerId) : undefined
-
-  if (!sessionId) return NextResponse.json({ error: 'sessionId is required' }, { status: 400 })
-  if (!model) return NextResponse.json({ error: 'model is required' }, { status: 400 })
-  if (!message.trim()) return NextResponse.json({ error: 'message is required' }, { status: 400 })
+  const parsed = await parseBody(req, AgentBody)
+  if (!parsed.ok) return parsed.response
+  const { sessionId, model, message, thinkingEffort, providerId } = parsed.data
+  const body = parsed.data
 
   const resolvedProvider = providerId ?? activeProviderId()
   // Remember the pick so this provider reopens on the same model next time.
@@ -80,8 +79,10 @@ export async function POST(req: NextRequest) {
   } catch {
     /* non-fatal */
   }
-  const prompt = await systemPromptFor(model, resolvedProvider)
-  const session = ensureSession(sessionId, model, prompt, resolvedProvider)
+  // A session's mode is fixed when it is created; later requests can't flip it.
+  const mode = getSession(sessionId)?.mode ?? parseMode(body.mode)
+  const prompt = await systemPromptFor(model, resolvedProvider, mode)
+  const session = ensureSession(sessionId, model, prompt, resolvedProvider, mode)
 
   // Keep the system prompt in sync when the operator switches models or
   // providers mid-session (native tools vs text protocol differ per model).

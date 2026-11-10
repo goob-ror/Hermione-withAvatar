@@ -38,6 +38,8 @@ export interface UIStateCacheData {
   preview: boolean
   activeModel: string
   companionState: 'idle' | 'focused' | 'alert'
+  /** Last workspace mode (Chat / Content Forge). */
+  appMode?: 'chat' | 'forge'
 }
 
 export interface PreferencesCacheData {

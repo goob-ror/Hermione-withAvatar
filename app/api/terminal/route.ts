@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
+import { id, parseBody } from '@/lib/http/validate'
 import {
   getTerminal,
   interrupt,
@@ -72,19 +74,12 @@ export async function GET(req: NextRequest) {
 }
 
 /** Operator input: raw keystrokes or a submitted line. */
+const TerminalInput = z.object({ sessionId: id(), input: z.string().min(1).max(20_000) })
+
 export async function POST(req: NextRequest) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
-  }
-
-  const sessionId = String(body.sessionId ?? '').trim()
-  if (!sessionId) return NextResponse.json({ error: 'sessionId is required' }, { status: 400 })
-
-  const data = String(body.input ?? '')
-  if (!data) return NextResponse.json({ error: 'input is required' }, { status: 400 })
+  const parsed = await parseBody(req, TerminalInput)
+  if (!parsed.ok) return parsed.response
+  const { sessionId, input: data } = parsed.data
 
   const result = writeInput(sessionId, data)
   return NextResponse.json(result, { status: result.ok ? 200 : 409 })

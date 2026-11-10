@@ -153,6 +153,8 @@ for (const file of files) {
       if (!rule.re.test(line)) continue
       const match = line.match(rule.re)?.[0] ?? ''
       if (rule.kind === 'local-path' && isPlaceholderPath(match)) continue
+      // "ghp_xxxx…", "sk-0000…": one repeated character after the prefix is UI placeholder text, not a key.
+      if (rule.kind === 'secret' && /^(.)\1+$/.test(match.replace(/^[a-z]+[_-]+/i, '').replace(/[^A-Za-z0-9]/g, ''))) continue
       const redacted = match.length > 12 ? `${match.slice(0, 6)}…${match.slice(-4)}` : '***'
       add(rule.severity, rule.kind, file, `${rule.label}: ${redacted}`, i + 1)
     }

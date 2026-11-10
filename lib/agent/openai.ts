@@ -14,10 +14,17 @@ import { hiddenReason } from './modelFilter'
  * schema (which is exactly what `toolSchemas()` already produces).
  */
 
+export interface TokenUsage {
+  input: number
+  output: number
+}
+
 export interface ChatTurn {
   content: string
   thinking: string
   toolCalls: Array<{ id?: string; function: { name: string; arguments: any } }>
+  /** Real counts when the provider reports them. */
+  usage?: TokenUsage
 }
 
 export interface CustomChatOptions {
@@ -337,25 +344,51 @@ interface AccumToolCall {
   args: string
 }
 
+/** Hosts that rejected `stream_options` — never send it to them again. */
+const NO_STREAM_OPTIONS = new Set<string>()
+
+function readUsage(u: any): TokenUsage | undefined {
+  if (!u || typeof u !== 'object') return undefined
+  const input = Number(u.prompt_tokens ?? u.input_tokens ?? 0)
+  const output = Number(u.completion_tokens ?? u.output_tokens ?? 0)
+  return input || output ? { input, output } : undefined
+}
+
 export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<ChatTurn> {
   const url = `${endpointRoot(opts.baseUrl)}/chat/completions`
+  const host = safeHost(url)
   const payload: Record<string, any> = {
     model: opts.model,
     messages: toCustomMessages(opts.messages),
     stream: true,
     temperature: opts.temperature ?? 0.3,
   }
+  // Ask for real token counts in the final stream chunk.
+  if (!NO_STREAM_OPTIONS.has(host)) payload.stream_options = { include_usage: true }
   if (opts.tools?.length) {
     payload.tools = opts.tools
     payload.tool_choice = 'auto'
   }
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: authHeaders(opts.apiKey, url),
-    body: JSON.stringify(payload),
-    signal: opts.signal ?? AbortSignal.timeout(180_000),
-  })
+  const send = () =>
+    fetch(url, {
+      method: 'POST',
+      headers: authHeaders(opts.apiKey, url),
+      body: JSON.stringify(payload),
+      signal: opts.signal ?? AbortSignal.timeout(180_000),
+    })
+
+  let res = await send()
+
+  // A server that doesn't know `stream_options` → drop it, remember, retry once.
+  if (res.status === 400 && payload.stream_options) {
+    const detail = await res.clone().text().catch(() => '')
+    if (/stream_options|include_usage|unrecognized|unknown (field|param)|extra (inputs|fields)/i.test(detail)) {
+      NO_STREAM_OPTIONS.add(host)
+      delete payload.stream_options
+      res = await send()
+    }
+  }
 
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => '')
@@ -376,7 +409,7 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
       id: call.id,
       function: { name: call.function?.name ?? '', arguments: call.function?.arguments ?? {} },
     }))
-    return { content, thinking, toolCalls }
+    return { content, thinking, toolCalls, usage: readUsage(body?.usage) }
   }
 
   const reader = res.body.getReader()
@@ -384,6 +417,7 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
   let buffer = ''
   let content = ''
   let thinking = ''
+  let usage: TokenUsage | undefined
   const calls: AccumToolCall[] = []
 
   const consumeLine = (line: string) => {
@@ -400,6 +434,8 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
       return
     }
     if (chunk.error) throw new Error(String(chunk.error?.message || chunk.error))
+    // The usage chunk arrives last (often with an empty `choices`).
+    usage = readUsage(chunk.usage) ?? usage
 
     const delta = chunk.choices?.[0]?.delta ?? chunk.choices?.[0]?.message ?? {}
     const reasoning = delta.reasoning_content ?? delta.reasoning ?? delta.thinking
@@ -447,5 +483,5 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
       return { id: c.id, function: { name: c.name, arguments: args } }
     })
 
-  return { content, thinking, toolCalls }
+  return { content, thinking, toolCalls, usage }
 }

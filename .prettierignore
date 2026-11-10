@@ -1,0 +1,7 @@
+.next
+node_modules
+.hermione
+PiperTTS
+public/**/*.min.js
+pnpm-lock.yaml
+*.md

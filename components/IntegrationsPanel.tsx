@@ -42,7 +42,7 @@ export default function IntegrationsPanel({ open, onClose }: IntegrationsPanelPr
     }
   }, [open])
 
-  const loadIntegrations = async () => {
+  async function loadIntegrations() {
     try {
       const [googleRes, telegramRes, githubRes] = await Promise.all([
         fetch('/api/google/accounts?action=list'),

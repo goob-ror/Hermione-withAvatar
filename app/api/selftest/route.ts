@@ -84,7 +84,8 @@ export async function GET() {
     notAllowed.output,
   )
 
-  const allowed = await shellRun.run({ command: 'ls lib/agent' }, ctx)
+  // `node` is allowlisted and exists on every platform (`ls` doesn't on Windows).
+  const allowed = await shellRun.run({ command: 'node --version' }, ctx)
   check('shell runs an allowlisted command', allowed.ok, allowed.output.split('\n').slice(0, 3).join(' | '))
 
   // --- domain allowlist ---------------------------------------------
@@ -143,10 +144,11 @@ export async function GET() {
   )
 
   // --- preview tools --------------------------------------------------
-  const blockedOpen = await pageOpen.run({ url: 'https://not-allowlisted.invalid/' }, ctx)
+  // page_open runs without approval, so it must never reach localhost / LAN.
+  const blockedOpen = await pageOpen.run({ url: 'http://127.0.0.1:9/' }, ctx)
   check(
-    'page_open refuses a non-allowlisted host',
-    !blockedOpen.ok && /not allowlisted|no domains are allowlisted/.test(blockedOpen.output),
+    'page_open refuses a private address',
+    !blockedOpen.ok && /refused: .*private address|local address/.test(blockedOpen.output),
     blockedOpen.output.slice(0, 120),
   )
   const emptyRead = await pageRead.run({}, { sessionId: 'selftest-empty', emit: () => {} })
@@ -248,8 +250,22 @@ export async function GET() {
   }
 
   // --- registry ------------------------------------------------------
-  const tiers = Object.values(TOOL_MAP).map((t) => `${t.name}:${t.tier}`)
-  check('registry has 10 tools with tiers', tiers.length === 10, tiers.join(', '))
+  // What matters is that anything able to change the machine or act on a site
+  // still asks — not how many tools exist.
+  const mustConfirm = ['fs_write', 'fs_delete', 'shell_run', 'terminal_run']
+  const notConfirm = mustConfirm.filter((name) => TOOL_MAP[name]?.tier !== 'confirm')
+  check('tools that change the machine need approval', notConfirm.length === 0, notConfirm.join(', ') || mustConfirm.join(', '))
+
+  const act = TOOL_MAP.page_act
+  const actSplit =
+    !!act?.needsApproval &&
+    act.needsApproval({ command: 'click' }) &&
+    act.needsApproval({ command: 'fill' }) &&
+    act.needsApproval({ command: 'submit' }) &&
+    act.needsApproval({ command: 'unknown' }) &&
+    !act.needsApproval({ command: 'text' }) &&
+    !act.needsApproval({ command: 'title' })
+  check('page_act: reads run freely, click/fill/submit/unknown ask', actSplit, 'needsApproval split')
 
   const failed = results.filter((r) => !r.ok)
   return NextResponse.json({ passed: results.length - failed.length, failed: failed.length, results }, { status: 200 })

@@ -132,7 +132,7 @@ function compressTree(raw: string): string {
   // Collapse deep levels, show count instead
   const lines = raw.split('\n')
   const result: string[] = []
-  let depth = 0
+  const depth = 0
 
   for (const line of lines) {
     const level = (line.match(/^[\s│├└─]*/)?.[0] || '').length / 4

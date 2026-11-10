@@ -31,6 +31,16 @@ export interface SessionData {
   title: string
   messages: SessionMessage[]
   providerId?: string
+  /** Which flow the session belongs to. Missing on older files = 'chat'. */
+  mode?: 'chat' | 'forge'
+  /** Model the session last ran on. */
+  model?: string
+  /**
+   * The model-facing history (assistant tool calls + tool results), minus the
+   * system prompt — so a resumed session keeps its working context. Long tool
+   * outputs are trimmed on disk. Missing on older files.
+   */
+  history?: Array<Record<string, unknown>>
   agentName: string
   metadata: {
     messageCount: number
@@ -122,26 +132,26 @@ export function listRecentSessions(limit = 20): SessionData[] {
     const sessionsRoot = sessionsDir()
     if (!fs.existsSync(sessionsRoot)) return []
 
+    // Folders are named by creation date, but a session's *last activity* can be
+    // much later — so read the recent folders fully, sort by activity, THEN cut.
+    // (Stopping at `limit` while reading used to drop the most recent sessions.)
     const dates = fs.readdirSync(sessionsRoot).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
     const sessions: SessionData[] = []
 
-    for (const date of dates) {
+    for (const date of dates.slice(0, 60)) {
       const dateDir = path.join(sessionsRoot, date)
       const files = fs.readdirSync(dateDir).filter(f => f.endsWith('.json'))
-      
+
       for (const file of files) {
-        if (sessions.length >= limit) return sessions
-        
         try {
-          const data = JSON.parse(fs.readFileSync(path.join(dateDir, file), 'utf-8'))
-          sessions.push(data)
+          sessions.push(JSON.parse(fs.readFileSync(path.join(dateDir, file), 'utf-8')))
         } catch {
           // Skip corrupted files
         }
       }
     }
 
-    return sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+    return sessions.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
   } catch (err) {
     console.error('Failed to list sessions:', err)
     return []

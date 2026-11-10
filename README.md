@@ -8,10 +8,26 @@ Built on **Next.js 16 + React 19 + TypeScript**, integrating with Google Workspa
 
 ## ✨ Features
 
+### 🤖 Models — any provider, automatic failover
+- **Auto-detection**: local runtimes (Ollama, LM Studio, llama.cpp, vLLM, Jan, KoboldCpp…) found on their default ports; API keys in `.env` show up as ready-to-add providers
+- **One-click presets**: OpenAI, Anthropic, Gemini, OpenRouter, Groq, Mistral, DeepSeek, xAI, Together, Fireworks — paste a key, models load
+- **One picker** for every model on every provider; non-chat models (embeddings, TTS, image, agent-only…) are hidden automatically
+- **Failover**: when a provider runs out of quota / credit or is rate-limited, the turn continues on the next model or provider (local first) and the exhausted one is skipped until it resets
+
+### 🎬 Content Forge
+- Separate **Chat** and **Content Forge** workspaces, each with its own session history
+- **Trending in your country**: today's and tomorrow's viral topics from live Google Trends data, one AI call cached for 48 h
+- A content-strategist prompt and a research-only tool set for short-form video work
+
+### 🌐 Web Research
+- `web_search`, `web_fetch`, `site_inspect`, `page_open` run **without approval** on the public internet (never localhost / LAN)
+- Keyless search (DuckDuckGo → Bing), optional **Chrome profile** search for fewer bot checks, optional Google API / own SearXNG
+
 ### 🎯 Token Optimization
-- **RTK Compression**: 60-90% token reduction on tool outputs (git/grep/ls/tree/logs)
+- **History compaction**: last 6 exchanges in full, older ones summarised, old tool output trimmed (~77% fewer tokens per request in long research sessions)
+- **Real token usage**: counts reported by the provider, shown per chat and per day under the composer
+- **RTK Compression**: 60-90% token reduction on terminal output (git/grep/ls/tree/logs)
 - **Lazy Senior Dev Mode**: YAGNI-biased coding with auto-detection
-- **Real-time Token Counter**: Monitor usage and compression savings
 
 ### 📧 Communication Hub
 - **Gmail**: Multi-account support, search, send, read
@@ -69,19 +85,21 @@ Built on **Next.js 16 + React 19 + TypeScript**, integrating with Google Workspa
 ## 🚀 Quick Start
 
 ### Prerequisites
-- Node.js 18+
-- npm 8+
-- Ollama (for local models) or API keys for cloud providers
+- Node.js 20+ (pnpm via `corepack`, bundled with Node)
+- At least one model source: [Ollama](https://ollama.com) or an API key (free tiers: Groq, OpenRouter, Mistral, Gemini)
+- Optional: Google Chrome, for searching through a Chrome profile
 
 ### Installation
 
 ```bash
 git clone <your-repo-url>
 cd Hermione-withAvatar
-npm install
-cp .env.example .env.local
-npm run dev
+corepack pnpm install
+cp .env.example .env
+corepack pnpm dev
 ```
+
+Every setting is documented in [`.env.example`](./.env.example).
 
 Open [http://localhost:3000](http://localhost:3000)
 
@@ -180,11 +198,15 @@ See [SOUL.md](./SOUL.md) for complete specification.
 ## 🧪 Development
 
 ```bash
-npm run dev          # Start dev server
-npm run typecheck    # Type check
-npm run build        # Build for production
-npm start            # Start production
+corepack pnpm dev            # Start dev server
+corepack pnpm check          # typecheck + lint + tests + publish (secret) check
+corepack pnpm test           # vitest (unit + integration, never touches .hermione)
+corepack pnpm lint           # ESLint (Next 16 flat config)
+corepack pnpm format         # Prettier
+corepack pnpm build          # Production build
 ```
+
+Tests live in `tests/`; the failover integration test runs two fake providers in-process.
 
 ---
 
@@ -211,11 +233,14 @@ Auto-detects coding tasks, YAGNI-biased prompting:
 
 ## 🔐 Security
 
-- API keys server-side only (`.hermione/` directory)
-- OAuth tokens encrypted
-- Permission gates for file system & web
-- Root-locked filesystem
-- Allowlist-based shell security
+- **Approval gates**: file writes/deletes, shell and terminal commands, and clicking/typing on websites (`page_act` click/fill/submit/scroll) always ask first
+- **Public-internet-only automatic tools**: every request and redirect hop must resolve to a public address — no localhost, LAN or cloud-metadata access
+- **Sandboxed preview**: pages render with an opaque origin (CSP `sandbox` + iframe `sandbox`), so their scripts can't reach Hermione
+- **API guard** (`proxy.ts`): loopback hosts only (DNS-rebinding safe), refuses `Origin: null`, cross-origin writes and cross-site background requests
+- **Validated input**: state-changing API routes check request bodies with zod; approvals require an explicit `approve`/`deny`
+- **Prompt-injection screening**: page text is scanned for instruction-shaped content and always treated as data
+- **Secrets**: API keys stay server-side and are never returned to the browser; keys can live in `.env` (referenced by name) instead of `.hermione/providers.json`. Note: `.hermione/` (provider keys, Google OAuth tokens) is stored **unencrypted** — keep it private
+- Root-locked filesystem and allowlist-based shell
 
 ---
 

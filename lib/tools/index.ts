@@ -32,9 +32,31 @@ export function isKnownTool(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(TOOL_MAP, name)
 }
 
-/** Ollama `tools` payload — the same schema every model sees. */
-export function toolSchemas() {
-  return TOOLS.map((tool) => ({
+/**
+ * Tools each workspace mode exposes. Every tool definition is re-sent on every
+ * model call, so Content Forge (research + preview) doesn't carry the shell,
+ * terminal and file-writing tools it never uses.
+ */
+const FORGE_TOOLS = new Set([
+  'web_search', 'web_fetch', 'site_inspect',
+  'page_open', 'page_read', 'page_act',
+  'fs_list', 'fs_read',
+  'get_time', 'get_calendar',
+])
+
+export type ToolMode = 'chat' | 'forge'
+
+export function toolsFor(mode: ToolMode = 'chat'): ToolDef[] {
+  return mode === 'forge' ? TOOLS.filter((t) => FORGE_TOOLS.has(t.name)) : TOOLS
+}
+
+export function isToolAllowed(name: string, mode: ToolMode = 'chat'): boolean {
+  return mode !== 'forge' || FORGE_TOOLS.has(name)
+}
+
+/** Ollama / OpenAI `tools` payload for the given mode. */
+export function toolSchemas(mode: ToolMode = 'chat') {
+  return toolsFor(mode).map((tool) => ({
     type: 'function' as const,
     function: {
       name: tool.name,
@@ -45,8 +67,8 @@ export function toolSchemas() {
 }
 
 /** Text-protocol description for models without the `tools` capability. */
-export function textToolProtocol(): string {
-  const list = TOOLS.map((t) => {
+export function textToolProtocol(mode: ToolMode = 'chat'): string {
+  const list = toolsFor(mode).map((t) => {
     const args = (t.parameters as any).properties ?? {}
     const argDoc = Object.entries(args)
       .map(([k, v]: [string, any]) => `${k}${(t.parameters as any).required?.includes(k) ? '' : '?'}: ${v.type}`)

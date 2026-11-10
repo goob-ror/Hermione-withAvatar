@@ -345,7 +345,7 @@ export function ModelManagerModal({
                     <HardDrive className="size-8 mx-auto text-zinc-600 mb-2" />
                     <p className="text-xs text-zinc-400">No models found in Ollama yet.</p>
                     <p className="text-[11px] text-zinc-500 mt-1">
-                      Click the "Assign New GGUF Model" tab to register one from your codespace or any local directory.
+                      Click the &ldquo;Assign New GGUF Model&rdquo; tab to register one from your codespace or any local directory.
                     </p>
                   </div>
                 ) : (

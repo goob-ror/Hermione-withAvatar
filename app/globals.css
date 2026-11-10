@@ -1426,12 +1426,30 @@ body.is-resizing {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  min-height: calc(100vh - 52px);
+  /* `safe` keeps the top reachable when content is taller than the window. */
+  justify-content: safe center;
+  height: calc(100vh - 52px);
   padding: 60px 20px;
   gap: 32px;
   background: #0a0a0b;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* Content Forge carries more UI (pipeline, platforms, trends) — tighten it up. */
+.welcome-screen.is-forge {
+  padding: 28px 20px 32px;
+  gap: 20px;
+}
+
+.welcome-screen.is-forge .welcome-avatar-card {
+  width: 190px;
+  height: 230px;
+  flex-shrink: 0;
+}
+
+.welcome-screen.is-forge .welcome-title {
+  font-size: 28px;
 }
 
 .welcome-avatar-card {

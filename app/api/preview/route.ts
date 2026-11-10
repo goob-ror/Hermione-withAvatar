@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { openPage } from '@/lib/preview/open'
 import { clearPage, pageInfo } from '@/lib/preview/store'
+import { z } from 'zod'
+import { id, parseBody } from '@/lib/http/validate'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,20 +18,21 @@ export async function GET(req: Request) {
  * Same allowlist and same caps as the `page_open` tool; this exists so the
  * operator can drive the panel directly without going through the model.
  */
+const PreviewBody = z.object({
+  sessionId: id(),
+  url: id(4000),
+  maxChars: z.number().int().positive().max(60_000).optional(),
+})
+
 export async function POST(req: Request) {
-  let body: any
-  try {
-    body = await req.json()
-  } catch {
-    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 })
-  }
+  const parsed = await parseBody(req, PreviewBody)
+  if (!parsed.ok) return parsed.response
+  const { sessionId, url } = parsed.data
+  const body = parsed.data
 
-  const sessionId = String(body?.sessionId ?? '').trim()
-  const url = String(body?.url ?? '').trim()
-  if (!sessionId) return NextResponse.json({ error: 'sessionId is required' }, { status: 400 })
-  if (!url) return NextResponse.json({ error: 'url is required' }, { status: 400 })
-
-  const result = await openPage(sessionId, url, { maxChars: Number(body?.maxChars) || undefined })
+  // The operator typed this URL into the preview bar themselves — that is the
+  // visit consent. (proxy.ts guarantees only Hermione's own page can call this.)
+  const result = await openPage(sessionId, url, { maxChars: Number(body?.maxChars) || undefined, acknowledged: true })
   if (!result.ok) return NextResponse.json({ ok: false, error: result.output }, { status: 400 })
 
   return NextResponse.json({

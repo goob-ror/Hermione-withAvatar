@@ -1,0 +1,24 @@
+# Normalise line endings: LF in the repo and in the working copy on every OS.
+# (Stops the "LF will be replaced by CRLF" warnings on Windows.)
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binary assets — never touch.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.wav  binary
+*.mp3  binary
+*.onnx binary
+*.moc3 binary
+*.glb  binary
+*.vrm  binary
+*.woff binary
+*.woff2 binary

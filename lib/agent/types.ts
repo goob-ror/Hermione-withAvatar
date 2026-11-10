@@ -26,6 +26,11 @@ export interface ToolDef {
   tier: ToolTier
   /** JSON Schema for the arguments object. */
   parameters: Record<string, unknown>
+  /**
+   * Per-call override of `tier`: return true when THIS call needs the
+   * operator's approval (e.g. page_act: reads run freely, clicks/typing ask).
+   */
+  needsApproval?(args: Record<string, any>): boolean
   run(args: Record<string, any>, ctx: ToolContext): Promise<ToolResult>
 }
 
@@ -41,6 +46,10 @@ export interface ToolCall {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** When the message was first recorded (ms). Set on first save, never rewritten. */
+  at?: number
+  /** Model that wrote this assistant message (sessions can switch models / fail over). */
+  model?: string
   tool_name?: string
   tool_call_id?: string
   tool_calls?: OllamaToolCall[]
@@ -72,6 +81,10 @@ export type AgentEvent =
   | { type: 'visit_request'; url: string; host: string; approved: boolean; reason?: string }
   /** Idle chatter from the subagent — brief remark + pose/mood for avatar sync. */
   | { type: 'remark'; text: string; pose: string; mood: string; durationMs: number }
+  /** Tokens used by one model call (estimated when the provider reports none). */
+  | { type: 'usage'; input: number; output: number; model: string; providerId: string; estimated: boolean }
+  /** The provider ran out of quota/credit or hit a rate limit; the turn continues elsewhere. */
+  | { type: 'failover'; from: string; toProviderId: string; toProviderLabel: string; toModel: string; reason: string }
   | { type: 'final'; text: string }
   | { type: 'error'; message: string }
 

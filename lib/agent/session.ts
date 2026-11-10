@@ -1,6 +1,12 @@
 import type { ChatMessage, ToolCall } from './types'
 import { loadSession as loadSessionFromDisk, saveSession as saveSessionToDisk, type SessionData, type SessionMessage } from '@/lib/storage/sessions'
 
+export type SessionMode = 'chat' | 'forge'
+
+export function parseMode(value: unknown): SessionMode {
+  return value === 'forge' ? 'forge' : 'chat'
+}
+
 export interface PendingApproval {
   callId: string
   tool: string
@@ -16,6 +22,8 @@ export interface Session {
   model: string
   /** Provider this session is pinned to; falls back to the active one. */
   providerId?: string
+  /** 'chat' = general assistant, 'forge' = Content Forge. Fixed at creation. */
+  mode: SessionMode
   messages: ChatMessage[]
   pending?: PendingApproval
   updatedAt: number
@@ -52,7 +60,13 @@ export function getSession(id: string): Session | undefined {
   return undefined
 }
 
-export function ensureSession(id: string, model: string, systemPrompt: string, providerId?: string): Session {
+export function ensureSession(
+  id: string,
+  model: string,
+  systemPrompt: string,
+  providerId?: string,
+  mode: SessionMode = 'chat',
+): Session {
   prune()
   const existing = SESSIONS.get(id) ?? (loadSessionFromDisk(id) ? sessionFromStored(loadSessionFromDisk(id)!) : undefined)
   
@@ -71,6 +85,7 @@ export function ensureSession(id: string, model: string, systemPrompt: string, p
     id,
     model,
     providerId,
+    mode,
     messages: [{ role: 'system', content: systemPrompt }],
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -79,9 +94,15 @@ export function ensureSession(id: string, model: string, systemPrompt: string, p
   return session
 }
 
-export function resetSession(id: string, model: string, systemPrompt: string, providerId?: string): Session {
+export function resetSession(
+  id: string,
+  model: string,
+  systemPrompt: string,
+  providerId?: string,
+  mode: SessionMode = 'chat',
+): Session {
   SESSIONS.delete(id)
-  return ensureSession(id, model, systemPrompt, providerId)
+  return ensureSession(id, model, systemPrompt, providerId, mode)
 }
 
 export function touch(session: Session) {
@@ -103,21 +124,37 @@ export function persistSession(session: Session): void {
 
 // Conversion helpers between Session and SessionData formats
 
+/** Placeholder; the agent route swaps in the real system prompt on the next turn. */
+const RESTORED_SYSTEM = 'You are Hermione.'
+
+/** Tool outputs kept on disk per message — the model only needs the gist of old ones. */
+const STORED_TOOL_CHARS = 4000
+
+const isToolResultText = (text: string) => text.startsWith('TOOL RESULT —')
+
 function sessionFromStored(stored: SessionData): Session {
-  const messages: ChatMessage[] = [{ role: 'system', content: 'You are Hermione, a helpful AI assistant.' }]
-  
-  for (const msg of stored.messages) {
-    if (msg.role === 'user') {
-      messages.push({ role: 'user', content: msg.text })
-    } else if (msg.role === 'agent') {
-      messages.push({ role: 'assistant', content: msg.text })
+  const messages: ChatMessage[] = [{ role: 'system', content: RESTORED_SYSTEM }]
+
+  if (Array.isArray(stored.history) && stored.history.length) {
+    // Full working context: tool calls, tool results, per-message model and time.
+    for (const raw of stored.history) {
+      const m = raw as unknown as ChatMessage
+      if (m && typeof m.content === 'string' && ['user', 'assistant', 'tool'].includes(m.role)) messages.push(m)
+    }
+  } else {
+    // Older files: transcript only.
+    for (const msg of stored.messages) {
+      const at = Date.parse(msg.time) || undefined
+      if (msg.role === 'user') messages.push({ role: 'user', content: msg.text, at })
+      else if (msg.role === 'agent') messages.push({ role: 'assistant', content: msg.text, at, model: msg.modelUsed })
     }
   }
-  
+
   return {
     id: stored.id,
-    model: 'hermes',
+    model: stored.model || 'hermes',
     providerId: stored.providerId,
+    mode: parseMode(stored.mode),
     messages,
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
@@ -127,29 +164,43 @@ function sessionFromStored(stored: SessionData): Session {
 function sessionToStored(session: Session): SessionData {
   const messages: SessionMessage[] = []
   let firstUserMessage: string | undefined
-  
+  const now = Date.now()
+
   for (const msg of session.messages) {
+    // Stamp once, on first save — later saves keep the original time.
+    if (msg.role !== 'system' && !msg.at) msg.at = now
+    const time = new Date(msg.at ?? now).toISOString()
+
     if (msg.role === 'user') {
-      const text = msg.content
-      messages.push({ role: 'user', text, time: new Date().toISOString() })
-      if (!firstUserMessage) firstUserMessage = text.slice(0, 100)
+      // Text-protocol tool results ride as user messages — not part of the transcript.
+      if (isToolResultText(msg.content)) continue
+      messages.push({ role: 'user', text: msg.content, time })
+      if (!firstUserMessage) firstUserMessage = msg.content.slice(0, 100)
     } else if (msg.role === 'assistant') {
-      messages.push({ 
-        role: 'agent', 
-        text: msg.content,
-        time: new Date().toISOString(),
-        modelUsed: session.model 
-      })
+      // Frames that only carry a tool call have no visible text.
+      if (!msg.content.trim()) continue
+      messages.push({ role: 'agent', text: msg.content, time, modelUsed: msg.model ?? session.model })
     }
   }
-  
+
+  const history = session.messages
+    .filter((m) => m.role !== 'system')
+    .map((m) =>
+      (m.role === 'tool' || isToolResultText(m.content)) && m.content.length > STORED_TOOL_CHARS
+        ? { ...m, content: `${m.content.slice(0, STORED_TOOL_CHARS)}\n… [trimmed when saved]` }
+        : m,
+    )
+
   return {
     id: session.id,
-    createdAt: session.createdAt || Date.now(),
+    createdAt: session.createdAt || now,
     updatedAt: session.updatedAt,
-    title: firstUserMessage || 'New conversation',
+    title: firstUserMessage || (session.mode === 'forge' ? 'New forge project' : 'New conversation'),
     messages,
     providerId: session.providerId,
+    mode: session.mode,
+    model: session.model,
+    history: history as unknown as Array<Record<string, unknown>>,
     agentName: 'Hermione',
     metadata: {
       messageCount: messages.length,

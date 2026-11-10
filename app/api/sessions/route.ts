@@ -6,12 +6,17 @@ import { listRecentSessions, type SessionData } from '@/lib/storage/sessions'
  * Query: ?limit=20 (optional, default 20)
  */
 export async function GET(req: NextRequest) {
-  const limit = Math.min(Number(new URL(req.url).searchParams.get('limit') || 20), 100)
+  const params = new URL(req.url).searchParams
+  const limit = Math.min(Number(params.get('limit') || 20), 100)
+  // ?mode=chat|forge — each flow keeps its own history. Old files without a mode are chat.
+  const mode = params.get('mode')
 
   try {
-    const sessions = listRecentSessions(limit)
+    const all = listRecentSessions(mode ? 200 : limit)
+    const sessions = (mode ? all.filter((s) => (s.mode ?? 'chat') === mode) : all).slice(0, limit)
     return NextResponse.json({
       sessions: sessions.map((s) => ({
+        mode: s.mode ?? 'chat',
         id: s.id,
         title: s.title,
         createdAt: s.createdAt,

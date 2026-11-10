@@ -41,6 +41,9 @@ import {
 } from '@/lib/cache/store'
 import { ModelManagerModal } from '@/components/ModelManagerModal'
 import { ProviderSettings, type PublicProvider } from '@/components/ProviderSettings'
+import { ModeSwitcher, ForgeIcon, type AppMode } from '@/components/ModeSwitcher'
+import { BrowserSettings } from '@/components/BrowserSettings'
+import { TokenCounter, EMPTY_USAGE, type UsageSum } from '@/components/TokenCounter'
 import { SharedTerminal } from '@/components/SharedTerminal'
 import { WelcomeScreen } from '@/components/WelcomeScreen'
 import { AvatarRemark } from '@/components/AvatarRemark'
@@ -259,6 +262,7 @@ export default function Page() {
   )
   const [isModelModalOpen, setIsModelModalOpen] = useState(false)
   const [isProviderModalOpen, setIsProviderModalOpen] = useState(false)
+  const [isBrowserModalOpen, setIsBrowserModalOpen] = useState(false)
   const [providers, setProviders] = useState<PublicProvider[]>([])
   const [activeProviderId, setActiveProviderId] = useState('')
   /** Every configured provider with its live model list — feeds the grouped picker. */
@@ -278,6 +282,32 @@ export default function Page() {
   })
   const [messages, setMessages] = useState<Message[]>([])
   const [showWelcome, setShowWelcome] = useState(true)
+  /** Chat = general assistant, Forge = Content Forge. Each has its own sessions. */
+  const [appMode, setAppMode] = useState<AppMode>('chat')
+  /** Real token usage: this chat (from stream events) and today (from the server ledger). */
+  const [chatUsage, setChatUsage] = useState<UsageSum>(EMPTY_USAGE)
+  const [todayUsage, setTodayUsage] = useState<UsageSum | null>(null)
+
+  const loadTodayUsage = useCallback(async () => {
+    try {
+      const res = await fetch('/api/usage', { cache: 'no-store' })
+      const data = await res.json()
+      if (data?.total) {
+        setTodayUsage({
+          input: data.total.input,
+          output: data.total.output,
+          calls: data.total.calls,
+          estimated: data.total.estimatedCalls > 0,
+        })
+      }
+    } catch {
+      /* counter just hides "today" */
+    }
+  }, [])
+
+  useEffect(() => {
+    loadTodayUsage()
+  }, [loadTodayUsage])
   const [activeRemark, setActiveRemark] = useState<{ text: string; pose: string; mood: string; durationMs: number } | null>(null)
   const [showStartupModal, setShowStartupModal] = useState(false)
   const [startupConfig, setStartupConfig] = useState<StartupConfig | null>(null)
@@ -317,6 +347,8 @@ export default function Page() {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [urlInput, setUrlInput] = useState('')
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  /** Bridge command ids sent to the preview frame and still awaiting an answer. */
+  const issuedCommandsRef = useRef<Set<string>>(new Set())
   const [mounted, setMounted] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
@@ -358,6 +390,7 @@ export default function Page() {
     if (cached.companionState) setCompanionState(cached.companionState)
     if (cached.isTerminalOpen !== undefined) setIsTerminalOpen(cached.isTerminalOpen)
     if (cached.previewWidth) setPreviewWidth(cached.previewWidth)
+    if (cached.appMode) setAppMode(cached.appMode)
   }, [])
 
   // Persist UI state changes to cache (debounced)
@@ -370,10 +403,11 @@ export default function Page() {
         isTerminalOpen,
         activeModel,
         companionState,
+        appMode,
       })
     }, 500)
     return () => clearTimeout(timer)
-  }, [preview, previewWidth, thinkingEffort, isTerminalOpen, activeModel, companionState])
+  }, [preview, previewWidth, thinkingEffort, isTerminalOpen, activeModel, companionState, appMode])
 
   // Persist session ID to cache
   useEffect(() => {
@@ -392,20 +426,17 @@ export default function Page() {
     }
   }, [activeProviderId, providers])
 
-  // Load recent sessions on mount
+  // On mount: resume the last session (in whichever mode it belongs to).
   useEffect(() => {
     const loadSessions = async () => {
       setIsLoadingSessions(true)
       try {
-        const res = await fetch('/api/sessions?limit=10', { cache: 'no-store' })
+        const res = await fetch('/api/sessions?limit=50', { cache: 'no-store' })
         if (res.ok) {
           const data = await res.json()
-          setRecentSessions(data.sessions || [])
-          
-          // Check if current sessionId exists in saved sessions
-          const currentSessionExists = data.sessions.some((s: any) => s.id === sessionId)
-          if (currentSessionExists) {
-            // Load messages from that session
+          const current = (data.sessions || []).find((s: any) => s.id === sessionId)
+          if (current) {
+            setAppMode(current.mode === 'forge' ? 'forge' : 'chat')
             await loadSessionMessages(sessionId)
             setShowWelcome(false) // Don't show welcome for existing sessions
           } else {
@@ -420,6 +451,23 @@ export default function Page() {
     }
     loadSessions()
   }, [])
+
+  /** Sidebar history — each mode keeps its own list, like Claude's Chat / Code. */
+  const refreshRecentSessions = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/sessions?limit=10&mode=${appMode}`, { cache: 'no-store' })
+      if (res.ok) {
+        const data = await res.json()
+        setRecentSessions(data.sessions || [])
+      }
+    } catch {
+      /* keep the previous list */
+    }
+  }, [appMode])
+
+  useEffect(() => {
+    refreshRecentSessions()
+  }, [refreshRecentSessions])
 
   const loadSessionMessages = async (sessionIdToLoad: string) => {
     try {
@@ -562,14 +610,19 @@ export default function Page() {
       }).catch(() => {})
       return
     }
+    issuedCommandsRef.current.add(commandId)
     frame.contentWindow.postMessage({ __hermione: 'cmd', id: commandId, command, args }, '*')
   }
 
   // The bridge answers here; forward the result to the waiting tool call.
+  // Only the preview frame may answer, and only for commands we actually sent —
+  // another window (a popup, an embedded ad) can't inject fake results.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const data: any = event.data
       if (!data || data.__hermione !== 'res' || !data.id) return
+      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return
+      if (!issuedCommandsRef.current.delete(String(data.id))) return
       fetch('/api/preview/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -668,6 +721,24 @@ export default function Page() {
 
   const applyEvent = (event: any) => {
     const index = agentIndexRef.current
+
+    // Real token counts per model call.
+    if (event.type === 'usage') {
+      setChatUsage((u) => ({
+        input: u.input + event.input,
+        output: u.output + event.output,
+        calls: u.calls + 1,
+        estimated: u.estimated || !!event.estimated,
+      }))
+      return
+    }
+
+    // Quota/rate failover: follow the server to the model it switched to.
+    if (event.type === 'failover') {
+      setActiveProviderId(event.toProviderId)
+      setActiveModel(event.toModel)
+      loadModelGroups(true)
+    }
 
     // The server hid a model that can't chat — refresh the pickers so it disappears.
     if (event.type === 'error' && typeof event.message === 'string' && event.message.includes('[model-hidden]')) {
@@ -789,6 +860,10 @@ export default function Page() {
         case 'error':
           msg.text = `${msg.text ? `${msg.text}\n\n` : ''}⚠ ${event.message}`
           break
+        case 'failover':
+          msg.text = `${msg.text ? `${msg.text}\n\n` : ''}↪ ${event.reason} — continuing with ${event.toModel} (${event.toProviderLabel}).\n\n`
+          msg.modelUsed = event.toModel
+          break
       }
 
       copy[index] = msg
@@ -839,6 +914,7 @@ export default function Page() {
         message: userText,
         thinkingEffort,
         providerId: activeProviderId || undefined,
+        mode: appMode,
       })
     } catch (err: any) {
       setCompanionState('alert')
@@ -853,6 +929,8 @@ export default function Page() {
     } finally {
       setIsStreaming(false)
       setCompanionState((state) => (state === 'alert' ? state : 'idle'))
+      refreshRecentSessions()
+      loadTodayUsage()
     }
   }
 
@@ -906,14 +984,23 @@ export default function Page() {
   const startNewSession = () => {
     setSessionId(`s_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`)
     setMessages([])
+    setChatUsage(EMPTY_USAGE)
     agentIndexRef.current = -1
     setCompanionState('idle')
     setShowWelcome(true)
   }
 
+  /** Switching modes opens a fresh session in that mode (its history is in the sidebar). */
+  const switchMode = (next: AppMode) => {
+    if (next === appMode || isStreaming) return
+    setAppMode(next)
+    startNewSession()
+  }
+
   const resumeSession = async (sessionIdToResume: string) => {
     setSessionId(sessionIdToResume)
     setMessages([])
+    setChatUsage(EMPTY_USAGE)
     agentIndexRef.current = -1
     setCompanionState('idle')
     setShowWelcome(false) // Don't show welcome when resuming
@@ -1094,8 +1181,12 @@ export default function Page() {
   return (
     <main className="app-shell">
       {/* Top Header */}
-      <header className="topbar">
-        <div className="brand">          
+      <header className="topbar relative">
+        {/* Chat / Content Forge — like Claude's Chat / Code split */}
+        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+          <ModeSwitcher mode={appMode} onChange={switchMode} disabled={isStreaming} />
+        </div>
+        <div className="brand">
           <button
             onClick={() => setIsProviderModalOpen(true)}
             className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#171618] hover:bg-[#232126] border border-[#27252a] text-[#dedbd7] transition-colors text-xs font-mono"
@@ -1126,6 +1217,13 @@ export default function Page() {
             Access
           </button>
           <button
+            onClick={() => setIsBrowserModalOpen(true)}
+            className="text-[11px] font-mono text-zinc-400 hover:text-[#d2b278] border border-[#29272b] px-2 py-1 rounded bg-[#131214]"
+            title="Chrome profile Hermione searches through"
+          >
+            Browser
+          </button>
+          <button
             onClick={() => setIsTerminalOpen((v) => !v)}
             className="text-[11px] font-mono text-zinc-400 hover:text-[#d2b278] border border-[#29272b] px-2 py-1 rounded bg-[#131214]"
             title="The shell you and the agent share"
@@ -1141,6 +1239,10 @@ export default function Page() {
       {/* Main Workspace Layout */}
       {showWelcome && messages.length === 0 ? (
         <WelcomeScreen
+          key={appMode}
+          mode={appMode}
+          model={activeModel}
+          providerId={activeProviderId || undefined}
           userName="Serpto"
           onSubmit={(text) => {
             handleSendMessage(text)
@@ -1155,7 +1257,8 @@ export default function Page() {
         {/* Sidebar */}
         <aside className="sidebar">
           <button className="new-session" onClick={startNewSession}>
-            <Plus className="size-4" /> New session <span>⌘ N</span>
+            {appMode === 'forge' ? <ForgeIcon className="size-4 text-[#f0956f]" /> : <Plus className="size-4" />}
+            {appMode === 'forge' ? 'New project' : 'New session'} <span>⌘ N</span>
           </button>
 
           <div className="sidebar-section">
@@ -1176,7 +1279,7 @@ export default function Page() {
             </div>
 
             <span className="sidebar-label">
-              Sessions <MoreHorizontal className="size-3.5" />
+              {appMode === 'forge' ? 'Forge projects' : 'Sessions'} <MoreHorizontal className="size-3.5" />
             </span>
             <button className="session active">
               <span className="session-dot" /> 
@@ -1320,7 +1423,11 @@ export default function Page() {
                   e.currentTarget.style.height = 'auto'
                   e.currentTarget.style.height = `${Math.min(e.currentTarget.scrollHeight, 160)}px`
                 }}
-                placeholder="Ask Hermione to inspect, browse, or execute local tasks…"
+                placeholder={
+                  appMode === 'forge'
+                    ? 'Refine the topic, ask why a video went viral, or request titles & tags…'
+                    : 'Ask Hermione to inspect, browse, or execute local tasks…'
+                }
                 rows={1}
                 spellCheck={false}
               />
@@ -1399,7 +1506,8 @@ export default function Page() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 text-[10px] text-zinc-500">
+              <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+                <TokenCounter chat={chatUsage} today={todayUsage} />
                 <span>
                   Enter to send <kbd>↵</kbd>
                 </span>
@@ -1451,6 +1559,10 @@ export default function Page() {
                   ref={iframeRef}
                   key={previewKey}
                   className="site-frame"
+                  // Opaque origin: the page's scripts can't reach Hermione's window, storage or API.
+                  // Must never include allow-same-origin (with allow-scripts that undoes the sandbox).
+                  sandbox="allow-scripts allow-forms allow-popups"
+                  referrerPolicy="no-referrer"
                   src={`/api/preview/frame?sessionId=${encodeURIComponent(sessionId)}&v=${previewKey}`}
                   title="Live preview"
                 />
@@ -1537,6 +1649,9 @@ export default function Page() {
         onAdd={addFolderGrant}
         onRemove={removeFolderGrant}
       />
+
+      {/* Chrome profile used for web searches */}
+      <BrowserSettings isOpen={isBrowserModalOpen} onClose={() => setIsBrowserModalOpen(false)} />
 
       {/* Provider settings (custom endpoint + token) */}
       <ProviderSettings

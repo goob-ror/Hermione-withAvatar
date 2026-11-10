@@ -33,15 +33,7 @@ export default function DeploymentStatus({ open, onClose }: DeploymentStatusProp
   const [loading, setLoading] = useState(true)
   const [overallStatus, setOverallStatus] = useState<'healthy' | 'degraded' | 'down'>('healthy')
 
-  useEffect(() => {
-    if (open) {
-      loadStatus()
-      const interval = setInterval(loadStatus, 30000) // Refresh every 30s
-      return () => clearInterval(interval)
-    }
-  }, [open])
-
-  const loadStatus = async () => {
+  async function loadStatus() {
     try {
       const res = await fetch('/api/dev/deployment', {
         method: 'POST',
@@ -102,6 +94,14 @@ export default function DeploymentStatus({ open, onClose }: DeploymentStatusProp
         return 'text-gray-400'
     }
   }
+
+  useEffect(() => {
+    if (open) {
+      loadStatus()
+      const interval = setInterval(loadStatus, 30000) // Refresh every 30s
+      return () => clearInterval(interval)
+    }
+  }, [open])
 
   if (!open) return null
 
