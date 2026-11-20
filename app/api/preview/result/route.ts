@@ -21,7 +21,10 @@ export async function POST(req: Request) {
 
   const ok = body?.ok !== false
   const output = String(body?.output ?? '')
-  const resolved = resolveCommand(commandId, ok, output)
+  // Only an http(s) URL is accepted as a navigation target.
+  const navRaw = typeof body?.navigate === 'string' ? body.navigate.slice(0, 4000) : ''
+  const navigate = /^https?:\/\//i.test(navRaw) ? navRaw : undefined
+  const resolved = resolveCommand(commandId, ok, output, navigate)
 
   if (!resolved) {
     return NextResponse.json({ ok: false, error: 'no command waiting with that id (already answered or timed out)' }, { status: 404 })

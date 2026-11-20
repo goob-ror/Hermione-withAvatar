@@ -13,6 +13,8 @@ export type ThinkingEffort = 'off' | 'low' | 'medium' | 'high'
 
 export interface ToolContext {
   sessionId: string
+  /** 'chat' or 'forge' (Content Forge) — the workspace this run belongs to. */
+  mode?: 'chat' | 'forge'
   emit: Emit
   rtkEnabled?: boolean
   rtkLevel?: 'low' | 'medium' | 'high'
@@ -41,6 +43,10 @@ export interface ToolCall {
   args: Record<string, any>
   /** Native id minted by a hosted provider — echoed back on the tool message. */
   providerCallId?: string
+  /** The model's arguments couldn't be parsed — the tool is not run; this is reported back instead. */
+  argsError?: string
+  /** What the model sent, for that report. */
+  argsRaw?: string
 }
 
 export interface ChatMessage {
@@ -87,5 +93,22 @@ export type AgentEvent =
   | { type: 'failover'; from: string; toProviderId: string; toProviderLabel: string; toModel: string; reason: string }
   | { type: 'final'; text: string }
   | { type: 'error'; message: string }
+  /** Hermione asked a multiple-choice question; the run waits for the operator's answer. */
+  | {
+      type: 'question'
+      callId: string
+      question: string
+      options: { label: string; description?: string }[]
+      multiple: boolean
+      allowOther: boolean
+    }
+  /** Her task checklist changed (update_plan) — the whole list, in order. */
+  | { type: 'plan'; items: { content: string; status: 'pending' | 'in_progress' | 'completed' }[] }
+  /** A clip finished rendering (clip_render) — the chat shows a player. */
+  | { type: 'clip_ready'; jobId: string; title: string; duration: number; video: string; cover: string; warnings: string[] }
+  /** Hermione saved (or updated) a memory — the chat shows it with an Undo. */
+  | { type: 'memory_saved'; id: string; text: string; created: boolean }
+  /** The operator pressed Stop; the run ended without an answer. */
+  | { type: 'stopped' }
 
 export type Emit = (event: AgentEvent) => void

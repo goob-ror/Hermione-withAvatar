@@ -75,7 +75,7 @@ export function StartupConfigModal({ open, onComplete }: Props) {
         },
         ttsProvider: {
           kind: ttsKind,
-          label: ttsKind === 'local' ? 'PiperTTS (local)' : ttsKind === 'cloudflare' ? 'Cloudflare Workers AI' : 'None',
+          label: ttsKind === 'local' ? 'VoxCPM2 (local)' : ttsKind === 'cloudflare' ? 'Cloudflare Workers AI' : 'None',
           apiKey: ttsKind === 'cloudflare' ? ttsKey : undefined,
         },
         agentName,
@@ -253,7 +253,7 @@ export function StartupConfigModal({ open, onComplete }: Props) {
                   <div className="flex items-center gap-2">
                     <Volume2 size={16} />
                     <div>
-                      <div className="text-sm font-medium text-gray-200">PiperTTS (Local)</div>
+                      <div className="text-sm font-medium text-gray-200">VoxCPM2 (Local)</div>
                       <div className="text-xs text-gray-500">Offline speech synthesis</div>
                     </div>
                   </div>
@@ -315,7 +315,7 @@ export function StartupConfigModal({ open, onComplete }: Props) {
               <div className="bg-[#0a0a0b] border border-[#2a2a2c] rounded p-3">
                 <div className="text-xs font-semibold text-gray-400 mb-2">TTS Provider</div>
                 <div className="text-gray-200">
-                  {ttsKind === 'cloudflare' ? 'Cloudflare Workers AI' : ttsKind === 'local' ? 'PiperTTS' : 'Disabled'}
+                  {ttsKind === 'cloudflare' ? 'Cloudflare Workers AI' : ttsKind === 'local' ? 'VoxCPM2' : 'Disabled'}
                 </div>
               </div>
               <div className="bg-[#0a0a0b] border border-[#2a2a2c] rounded p-3">

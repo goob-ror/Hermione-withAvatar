@@ -63,11 +63,13 @@ const key = (providerId: string, model: string) => `${providerId}::${model}`
  */
 export function classifyExhaustion(message: string): ExhaustKind | undefined {
   const m = message.toLowerCase()
+  // Quota first: Gemini's free-tier 429 says "exceeded your current quota, please check your plan and
+  // billing details" — that's one model's quota, not a billing problem that should block every model.
+  if (!/\(402\)|payment required/.test(m) && /resource_exhausted|exceeded your current quota|quota (exceeded|exhausted)|daily (limit|quota)|free[- ]tier.*limit|tokens per day|requests per day/.test(m)) {
+    return 'quota'
+  }
   if (/\(402\)|insufficient_quota|credit balance|billing|payment required|insufficient (credits|funds|balance)/.test(m)) {
     return 'billing'
-  }
-  if (/resource_exhausted|exceeded your current quota|quota (exceeded|exhausted)|daily (limit|quota)|free[- ]tier.*limit|tokens per day|requests per day/.test(m)) {
-    return 'quota'
   }
   if (/\(429\)|rate[ _-]?limit|too many requests|tokens per minute|requests per minute/.test(m)) return 'rate'
   return undefined

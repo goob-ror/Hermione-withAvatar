@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import {
+  ArrowDown,
   ArrowUp,
   ChevronDown,
   ChevronRight,
@@ -18,10 +19,21 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  Square,
   SquareTerminal,
   UserRound,
+  Brain,
+  Volume2,
+  VolumeX,
   Zap,
+  Lightbulb,
 } from 'lucide-react'
+import { useRunVoice } from '@/lib/voice/useRunVoice'
+import { MemoryBank } from '@/components/MemoryBank'
+import { ThinkingTrace, type TraceStep } from '@/components/ThinkingTrace'
+import { PlanCard, type PlanItem } from '@/components/PlanCard'
+import { ClipCard, type ClipData } from '@/components/ClipCard'
+import { ClipSetup } from '@/components/ClipSetup'
 import { Live2DAvatar } from '@/components/Live2DAvatar'
 import { initLive2DPreloader } from '@/lib/live2d/preloader'
 import {
@@ -43,11 +55,17 @@ import { ModelManagerModal } from '@/components/ModelManagerModal'
 import { ProviderSettings, type PublicProvider } from '@/components/ProviderSettings'
 import { ModeSwitcher, ForgeIcon, type AppMode } from '@/components/ModeSwitcher'
 import { BrowserSettings } from '@/components/BrowserSettings'
+import { ChatMarkdown } from '@/components/ChatMarkdown'
+import { LivePreview } from '@/components/LivePreview'
+import { ReplyActions, type Rating } from '@/components/ReplyActions'
+import { QuestionCard, type QuestionData } from '@/components/QuestionCard'
 import { TokenCounter, EMPTY_USAGE, type UsageSum } from '@/components/TokenCounter'
 import { SharedTerminal } from '@/components/SharedTerminal'
 import { WelcomeScreen } from '@/components/WelcomeScreen'
 import { AvatarRemark } from '@/components/AvatarRemark'
 import { ParticleNetwork } from '@/components/ParticleNetwork'
+import { ReplyFeedback } from '@/components/ReplyFeedback'
+import { VoiceModelPicker } from '@/components/VoiceModelPicker'
 import { StartupConfigModal, type StartupConfig } from '@/components/StartupConfigModal'
 import {
   FolderModal,
@@ -85,7 +103,8 @@ interface ApprovalData {
   args: Record<string, unknown>
   group: ToolKind
   reason: string
-  decision?: 'approved' | 'denied'
+  /** 'dismissed': you sent a new message instead, so it was never run. */
+  decision?: 'approved' | 'denied' | 'dismissed'
 }
 
 interface Message {
@@ -96,6 +115,23 @@ interface Message {
   modelUsed?: string
   toolCards?: ToolCardData[]
   approvals?: ApprovalData[]
+  /** Hermione's multiple-choice questions (ask_user). */
+  questions?: QuestionData[]
+  /** Her thoughts and tool calls, in the order they happened (the live activity row). */
+  steps?: TraceStep[]
+  /** Clips she rendered (clip_render). */
+  clips?: ClipData[]
+  /** Her task checklist (update_plan). */
+  plan?: PlanItem[]
+  /** Time spent working on this reply so far (ms), and when the current stretch began. */
+  workedMs?: number
+  activeSince?: number
+  /** Memories she saved during this reply (Undo removes a new one). */
+  memories?: { id: string; text: string; created: boolean; undone?: boolean }[]
+  /** The final answer (or an error) has arrived — tool activity collapses into one line. */
+  done?: boolean
+  /** The operator pressed Stop before she finished. */
+  stopped?: boolean
 }
 
 function ToolIcon({ kind, className = 'size-4' }: { kind: ToolKind; className?: string }) {
@@ -182,7 +218,8 @@ function PermissionCard({
   if (approval.decision) {
     return (
       <div className="permission-resolved">
-        <ShieldCheck className="size-4" /> {approval.decision === 'approved' ? 'Approved' : 'Denied'}{' '}
+        <ShieldCheck className="size-4" />{' '}
+        {approval.decision === 'approved' ? 'Approved' : approval.decision === 'dismissed' ? 'Not run' : 'Denied'}{' '}
         <code>{approval.tool}</code> <span>just now</span>
       </div>
     )
@@ -284,6 +321,20 @@ export default function Page() {
   const [showWelcome, setShowWelcome] = useState(true)
   /** Chat = general assistant, Forge = Content Forge. Each has its own sessions. */
   const [appMode, setAppMode] = useState<AppMode>('chat')
+  /** The Memory Bank page is open over the workspace (the chat stays mounted underneath). */
+  const [memoryOpen, setMemoryOpen] = useState(false)
+  /** Bumped when Hermione saves a memory, so an open Memory Bank reloads. */
+  const [memoryVersion, setMemoryVersion] = useState(0)
+  /** Clip setup window (FFmpeg / voice status, free Pexels + Groq keys). */
+  const [clipSetupOpen, setClipSetupOpen] = useState(false)
+  /** Real-Chrome live preview available (Chrome installed)? Otherwise the proxied preview is used. */
+  const [liveAvailable, setLiveAvailable] = useState(false)
+  useEffect(() => {
+    fetch('/api/live', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => setLiveAvailable(!!d.available))
+      .catch(() => {})
+  }, [])
   /** Real token usage: this chat (from stream events) and today (from the server ledger). */
   const [chatUsage, setChatUsage] = useState<UsageSum>(EMPTY_USAGE)
   const [todayUsage, setTodayUsage] = useState<UsageSum | null>(null)
@@ -335,6 +386,67 @@ export default function Page() {
   const [capabilities, setCapabilities] = useState<{ id: string; state: string; detail?: string }[]>([])
 
   const agentIndexRef = useRef<number>(-1)
+  /** Cancels the running request when the operator presses Stop. */
+  const abortRef = useRef<AbortController | null>(null)
+  const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  /** Thumbs up/down per reply, kept in this browser (key: session:index). */
+  const [ratings, setRatings] = useState<Record<string, Rating>>({})
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount (SSR-safe)
+      setRatings(JSON.parse(localStorage.getItem('hermione-ratings') || '{}'))
+    } catch {
+      /* storage blocked */
+    }
+  }, [])
+  /** The reply whose "what went wrong?" form is open, and lessons a 👎 just proposed (per reply). */
+  const [feedbackFor, setFeedbackFor] = useState<string | null>(null)
+  const [proposedLessons, setProposedLessons] = useState<Record<string, string[]>>({})
+  /** Save a rating on the server (feeds lessons). Failures only cost the lesson signal. */
+  const sendRating = (key: string, rating: Rating | undefined, msg: Message, extra: { reasons?: string[]; other?: string } = {}) => {
+    void fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'rating',
+        key,
+        rating: rating ?? null,
+        ...extra,
+        model: msg.modelUsed,
+        mode: appMode,
+        excerpt: msg.text.slice(0, 2000),
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const texts: string[] = (data?.proposed ?? []).map((l: { text: string }) => l.text)
+        if (texts.length) {
+          setProposedLessons((p) => ({ ...p, [key]: texts }))
+          setMemoryVersion((v) => v + 1)
+        }
+      })
+      .catch(() => {})
+  }
+  const rate = (key: string, rating: Rating | undefined) =>
+    setRatings((prev) => {
+      const next = { ...prev }
+      if (rating) next[key] = rating
+      else delete next[key]
+      try {
+        localStorage.setItem('hermione-ratings', JSON.stringify(next))
+      } catch {
+        /* storage blocked */
+      }
+      return next
+    })
+  const stopRun = () => abortRef.current?.abort()
+  /** Hermione's voice: waiting lines on long runs, a spoken summary of each answer. */
+  const voice = useRunVoice()
+  /** The message Retry answers again: your most recent one. */
+  const lastUserText = (() => {
+    for (let k = messages.length - 1; k >= 0; k--) if (messages[k].role === 'user') return messages[k].text
+    return ''
+  })()
 
   /* ---------------------------------------------------------------- */
   /* Preview panel — a real page in a same-origin iframe               */
@@ -347,8 +459,62 @@ export default function Page() {
   const [previewLoading, setPreviewLoading] = useState(false)
   const [urlInput, setUrlInput] = useState('')
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
+  /* ---------------------------------------------------------------- */
+  /* Transcript scrolling — follow new text only while you're at the bottom */
+  /* ---------------------------------------------------------------- */
+  const transcriptRef = useRef<HTMLDivElement | null>(null)
+  const atBottomRef = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
+
+  const onTranscriptScroll = () => {
+    const el = transcriptRef.current
+    if (!el) return
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+    atBottomRef.current = near
+    setAtBottom(near)
+  }
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    const el = transcriptRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior })
+    atBottomRef.current = true
+    setAtBottom(true)
+  }
+
+  // Follow the conversation as it streams — but never yank you down while you're reading above.
+  useEffect(() => {
+    if (atBottomRef.current) scrollToBottom()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages])
+
+  /**
+   * "Run" on a shell code block. The command was written by the model, so it
+   * always asks first; then it opens the shared terminal and types it in.
+   */
+  const runInTerminal = async (command: string) => {
+    if (!command.trim()) return
+    if (!window.confirm(`Run this in the shared terminal?\n\n${command}`)) return
+    setIsTerminalOpen(true)
+    // The shell starts when the terminal panel opens — retry briefly until it's ready.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const res = await fetch('/api/terminal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, input: command }),
+      }).catch(() => null)
+      if (res?.ok) return
+      await new Promise((r) => setTimeout(r, 300))
+    }
+  }
+
   /** Bridge command ids sent to the preview frame and still awaiting an answer. */
   const issuedCommandsRef = useRef<Set<string>>(new Set())
+  /** False while a newly keyed preview frame loads; commands queue until its bridge says "ready". */
+  const frameReadyRef = useRef(false)
+  const pendingFrameCmdsRef = useRef<{ commandId: string; command: string; args: Record<string, unknown> }[]>([])
+  /** Latest openPreview, for the message listener (which is registered once). */
+  const openPreviewRef = useRef<((url: string) => void) | null>(null)
   const [mounted, setMounted] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
@@ -486,6 +652,7 @@ export default function Page() {
             modelUsed: msg.modelUsed,
             toolCards: [],
             approvals: [],
+            done: true, // saved replies are finished: show their action row
           }))
           setMessages(loadedMessages)
           agentIndexRef.current = loadedMessages.length - 1
@@ -590,6 +757,7 @@ export default function Page() {
       setPreviewUrl(data.url)
       setPreviewTitle(data.title || data.url)
       setUrlInput(data.url)
+      frameReadyRef.current = false // new frame: hold commands until its bridge is ready
       setPreviewKey(Date.now())
       setPreview(true)
     } catch (err: any) {
@@ -599,8 +767,26 @@ export default function Page() {
     }
   }
 
-  /** Hand a command from the agent to the iframe bridge. */
+  openPreviewRef.current = (url: string) => {
+    void openPreview(url)
+  }
+
+  /** Hand a command from the agent to the iframe bridge (queued until a freshly loaded frame says it's ready). */
   const relayPreviewCommand = (commandId: string, command: string, args: Record<string, unknown>) => {
+    if (!frameReadyRef.current) {
+      pendingFrameCmdsRef.current.push({ commandId, command, args })
+      // Safety net: if "ready" never arrives (e.g. the page blocks scripts), try anyway after 8 s.
+      setTimeout(() => {
+        if (frameReadyRef.current) return
+        const queued = pendingFrameCmdsRef.current.splice(0)
+        queued.forEach((c) => postToFrame(c.commandId, c.command, c.args))
+      }, 8000)
+      return
+    }
+    postToFrame(commandId, command, args)
+  }
+
+  const postToFrame = (commandId: string, command: string, args: Record<string, unknown>) => {
     const frame = iframeRef.current
     if (!frame || !frame.contentWindow) {
       fetch('/api/preview/result', {
@@ -620,13 +806,36 @@ export default function Page() {
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const data: any = event.data
-      if (!data || data.__hermione !== 'res' || !data.id) return
+      if (!data || typeof data.__hermione !== 'string') return
+      // Only the preview frame may talk to the console.
       if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) return
+
+      // A freshly loaded page is ready: release commands that were waiting for it.
+      if (data.__hermione === 'ready') {
+        frameReadyRef.current = true
+        const queued = pendingFrameCmdsRef.current.splice(0)
+        queued.forEach((c) => postToFrame(c.commandId, c.command, c.args))
+        return
+      }
+
+      // The operator clicked a link inside the preview — load it through the preview pipeline
+      // so the bridge (and Hermione's control of the page) comes along.
+      if (data.__hermione === 'navigate' && typeof data.url === 'string' && /^https?:\/\//i.test(data.url)) {
+        openPreviewRef.current?.(data.url)
+        return
+      }
+
+      if (data.__hermione !== 'res' || !data.id) return
       if (!issuedCommandsRef.current.delete(String(data.id))) return
       fetch('/api/preview/result', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commandId: data.id, ok: data.ok !== false, output: String(data.output ?? '') }),
+        body: JSON.stringify({
+          commandId: data.id,
+          ok: data.ok !== false,
+          output: String(data.output ?? ''),
+          navigate: typeof data.navigate === 'string' ? data.navigate : undefined,
+        }),
       }).catch(() => {})
     }
     window.addEventListener('message', onMessage)
@@ -721,6 +930,10 @@ export default function Page() {
 
   const applyEvent = (event: any) => {
     const index = agentIndexRef.current
+    voice.onEvent(event)
+    // She answered, failed, stopped or is waiting on you: the thinking subtitle goes.
+    if (['final', 'error', 'stopped', 'approval_required', 'question'].includes(event.type)) setActiveRemark(null)
+    if (event.type === 'memory_saved') setMemoryVersion((v) => v + 1)
 
     // Real token counts per model call.
     if (event.type === 'usage') {
@@ -752,6 +965,7 @@ export default function Page() {
       setPreviewUrl(event.url)
       setPreviewTitle(event.title || event.url)
       setUrlInput(event.url)
+      frameReadyRef.current = false // new frame: hold commands until its bridge is ready
       setPreviewKey(Date.now())
       setPreviewError('')
       setPreview(true)
@@ -803,11 +1017,12 @@ export default function Page() {
 
     // Idle chatter from the subagent — display as a subtitle on the avatar.
     if (event.type === 'remark') {
+      if (abortRef.current === null) return // the run already ended
       setActiveRemark({ text: event.text, pose: event.pose, mood: event.mood as any, durationMs: event.durationMs })
       return
     }
 
-    if (event.type === 'approval_required') setCompanionState('alert')
+    if (event.type === 'approval_required' || event.type === 'question') setCompanionState('alert')
     if (event.type === 'tool_call' || event.type === 'token') setCompanionState('focused')
 
     setMessages((prev) => {
@@ -818,11 +1033,20 @@ export default function Page() {
       switch (event.type) {
         case 'thinking':
           msg.thinkingText = (msg.thinkingText || '') + event.delta
+          {
+            const steps = [...(msg.steps || [])]
+            const last = steps[steps.length - 1]
+            if (last?.kind === 'thinking') steps[steps.length - 1] = { kind: 'thinking', text: last.text + event.delta }
+            else steps.push({ kind: 'thinking', text: event.delta })
+            msg.steps = steps
+          }
           break
         case 'token':
           msg.text = (msg.text || '') + event.delta
           break
         case 'tool_call':
+          if (event.tool === 'ask_user' || event.tool === 'update_plan') break
+          msg.steps = [...(msg.steps || []), { kind: 'tool', callId: event.callId }]
           msg.toolCards = [
             ...(msg.toolCards || []),
             {
@@ -836,6 +1060,7 @@ export default function Page() {
           ]
           break
         case 'tool_result':
+          if (event.tool === 'ask_user' || event.tool === 'update_plan') break
           msg.toolCards = (msg.toolCards || []).map((card) =>
             card.callId === event.callId
               ? { ...card, state: event.ok ? 'done' : 'blocked', output: event.output, ok: !!event.ok }
@@ -854,11 +1079,44 @@ export default function Page() {
             },
           ]
           break
+        case 'clip_ready':
+          msg.clips = [
+            ...(msg.clips || []).filter((c) => c.jobId !== event.jobId),
+            { jobId: event.jobId, title: event.title, duration: event.duration, video: event.video, cover: event.cover, warnings: event.warnings || [] },
+          ]
+          break
+        case 'plan':
+          msg.plan = event.items
+          break
+        case 'memory_saved':
+          msg.memories = [
+            ...(msg.memories || []).filter((m) => m.id !== event.id),
+            { id: event.id, text: event.text, created: !!event.created },
+          ]
+          break
+        case 'question':
+          msg.questions = [
+            ...(msg.questions || []),
+            {
+              callId: event.callId,
+              question: event.question,
+              options: event.options || [],
+              multiple: !!event.multiple,
+              allowOther: event.allowOther !== false,
+            },
+          ]
+          break
         case 'final':
           if (event.text) msg.text = event.text
+          msg.done = true
           break
         case 'error':
           msg.text = `${msg.text ? `${msg.text}\n\n` : ''}⚠ ${event.message}`
+          msg.done = true
+          break
+        case 'stopped':
+          msg.stopped = true
+          msg.done = true
           break
         case 'failover':
           msg.text = `${msg.text ? `${msg.text}\n\n` : ''}↪ ${event.reason} — continuing with ${event.toModel} (${event.toProviderLabel}).\n\n`
@@ -872,40 +1130,84 @@ export default function Page() {
   }
 
   const runStream = async (url: string, body: Record<string, unknown>) => {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    const controller = new AbortController()
+    abortRef.current = controller
+    voice.runStarted()
+    const runIndex = agentIndexRef.current
+    markWorking(runIndex, true)
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
 
-    if (!response.ok) {
-      let detail = `${response.status} ${response.statusText}`
-      try {
-        const data = await response.json()
-        detail = data.error || detail
-      } catch {
-        // keep the status text
+      if (!response.ok) {
+        let detail = `${response.status} ${response.statusText}`
+        try {
+          const data = await response.json()
+          detail = data.error || detail
+        } catch {
+          // keep the status text
+        }
+        throw new Error(detail)
       }
-      throw new Error(detail)
-    }
 
-    await consumeStream(response, applyEvent)
+      await consumeStream(response, applyEvent)
+    } finally {
+      voice.runEnded()
+      setActiveRemark(null)
+      markWorking(runIndex, false)
+    }
   }
 
-  const handleSendMessage = async (messageText?: string) => {
+  /** Start/stop the reply's work timer (the activity row shows it live). */
+  const markWorking = (index: number, on: boolean) =>
+    setMessages((prev) => {
+      const msg = prev[index]
+      if (!msg || msg.role !== 'agent') return prev
+      const copy = [...prev]
+      copy[index] = on
+        ? { ...msg, activeSince: Date.now() }
+        : { ...msg, activeSince: undefined, workedMs: (msg.workedMs || 0) + (msg.activeSince ? Date.now() - msg.activeSince : 0) }
+      return copy
+    })
+
+  /** Stop pressed: keep whatever she had written, and mark the reply as stopped. */
+  const markStopped = (index: number) =>
+    setMessages((prev) => {
+      const copy = [...prev]
+      const current = copy[index]
+      if (current) copy[index] = { ...current, stopped: true, done: true }
+      return copy
+    })
+
+  /** Send a message — or, with retry, answer the last one again in place of the old reply. */
+  const handleSendMessage = async (messageText?: string, opts: { retry?: boolean } = {}) => {
     const userText = (messageText ?? input).trim()
     if (!userText || isStreaming) return
 
-    setInput('')
+    if (!opts.retry) {
+      closeOpenCards()
+      setInput('')
+      if (composerRef.current) composerRef.current.style.height = 'auto'
+    }
     setCompanionState('focused')
     setIsStreaming(true)
 
+    // Sending always brings you back to the latest message.
+    atBottomRef.current = true
+    setAtBottom(true)
     const userMessage: Message = { role: 'user', text: userText, time: stamp() }
     const agentMessage: Message = { role: 'agent', text: '', thinkingText: '', modelUsed: activeModel, time: stamp() }
 
-    const nextIndex = messages.length + 1
+    // Retry replaces everything after your last message; a new message adds a user + reply pair.
+    const lastUser = messages.map((m) => m.role).lastIndexOf('user')
+    const nextIndex = opts.retry ? lastUser + 1 : messages.length + 1
     agentIndexRef.current = nextIndex
-    setMessages((prev) => [...prev, userMessage, agentMessage])
+    setMessages((prev) => (opts.retry ? [...prev.slice(0, lastUser + 1), agentMessage] : [...prev, userMessage, agentMessage]))
+    if (opts.retry) rate(`${sessionId}:${nextIndex}`, undefined)
 
     try {
       await runStream('/api/agent', {
@@ -915,22 +1217,85 @@ export default function Page() {
         thinkingEffort,
         providerId: activeProviderId || undefined,
         mode: appMode,
+        retry: opts.retry || undefined,
       })
     } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        markStopped(nextIndex)
+        return
+      }
       setCompanionState('alert')
       setMessages((prev) => {
         const copy = [...prev]
         const current = copy[nextIndex]
         if (current) {
-          copy[nextIndex] = { ...current, text: `⚠ ${err?.message || 'request failed'}` }
+          copy[nextIndex] = { ...current, text: `⚠ ${err?.message || 'request failed'}`, done: true }
         }
         return copy
       })
     } finally {
+      abortRef.current = null
       setIsStreaming(false)
       setCompanionState((state) => (state === 'alert' ? state : 'idle'))
       refreshRecentSessions()
       loadTodayUsage()
+    }
+  }
+
+  /** Undo a memory Hermione just saved: delete it and strike it through in the chat. */
+  const undoMemory = async (index: number, id: string) => {
+    try {
+      const res = await fetch(`/api/memory-bank?kind=memory&id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      if (!res.ok && res.status !== 404) return
+    } catch {
+      return
+    }
+    setMemoryVersion((v) => v + 1)
+    setMessages((prev) => {
+      const copy = [...prev]
+      const msg = copy[index]
+      if (msg) copy[index] = { ...msg, memories: msg.memories?.map((m) => (m.id === id ? { ...m, undone: true } : m)) }
+      return copy
+    })
+  }
+
+  /** A new chat message answers any open permission card or question instead. */
+  const closeOpenCards = () => {
+    setMessages((prev) =>
+      prev.some((m) => m.approvals?.some((a) => !a.decision) || m.questions?.some((q) => !q.answer))
+        ? prev.map((m) => ({
+            ...m,
+            approvals: m.approvals?.map((a) => (a.decision ? a : { ...a, decision: 'dismissed' as const })),
+            questions: m.questions?.map((q) => (q.answer ? q : { ...q, answer: { choices: [], other: 'Answered in chat' } })),
+          }))
+        : prev,
+    )
+  }
+
+  /** Continue the paused run (after a permission decision or an answer) into the same reply. */
+  const resumeRun = async (url: string, body: Record<string, unknown>, failText: string) => {
+    const index = agentIndexRef.current
+    setIsStreaming(true)
+    setCompanionState('focused')
+
+    try {
+      await runStream(url, { sessionId, thinkingEffort, ...body })
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        markStopped(index)
+        return
+      }
+      setCompanionState('alert')
+      setMessages((prev) => {
+        const copy = [...prev]
+        const current = copy[index]
+        if (current) copy[index] = { ...current, text: [current.text, `⚠ ${err?.message || failText}`].join('\n\n'), done: true }
+        return copy
+      })
+    } finally {
+      abortRef.current = null
+      setIsStreaming(false)
+      setCompanionState((state) => (state === 'alert' ? state : 'idle'))
     }
   }
 
@@ -957,28 +1322,25 @@ export default function Page() {
       }
       return copy
     })
+    await resumeRun('/api/agent/approve', { callId: approval.callId, decision }, 'approval failed')
+  }
 
-    setIsStreaming(true)
-    setCompanionState('focused')
-
-    try {
-      await runStream('/api/agent/approve', {
-        sessionId,
-        callId: approval.callId,
-        decision,
-        thinkingEffort,
-      })
-    } catch (err: any) {
-      setCompanionState('alert')
-      setMessages((prev) => {
-        const copy = [...prev]
-        const current = copy[index]
-        if (current) copy[index] = { ...current, text: `${current.text}\n\n⚠ ${err?.message || 'approval failed'}` }
-        return copy
-      })
-    } finally {
-      setIsStreaming(false)
-    }
+  const handleAnswer = async (q: QuestionData, answer: { choices: string[]; other?: string } | 'skipped') => {
+    const index = agentIndexRef.current
+    setMessages((prev) => {
+      const copy = [...prev]
+      const msg = copy[index]
+      if (!msg) return prev
+      copy[index] = { ...msg, questions: (msg.questions || []).map((x) => (x.callId === q.callId ? { ...x, answer } : x)) }
+      return copy
+    })
+    await resumeRun(
+      '/api/agent/answer',
+      answer === 'skipped'
+        ? { callId: q.callId, skipped: true }
+        : { callId: q.callId, choices: answer.choices, other: answer.other },
+      'sending your answer failed',
+    )
   }
 
   const startNewSession = () => {
@@ -1184,7 +1546,16 @@ export default function Page() {
       <header className="topbar relative">
         {/* Chat / Content Forge — like Claude's Chat / Code split */}
         <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
-          <ModeSwitcher mode={appMode} onChange={switchMode} disabled={isStreaming} />
+          <ModeSwitcher
+            mode={appMode}
+            onChange={(m) => {
+              setMemoryOpen(false)
+              switchMode(m)
+            }}
+            disabled={isStreaming}
+            memoryOpen={memoryOpen}
+            onMemory={() => setMemoryOpen(true)}
+          />
         </div>
         <div className="brand">
           <button
@@ -1223,6 +1594,15 @@ export default function Page() {
           >
             Browser
           </button>
+          {appMode === 'forge' && (
+            <button
+              onClick={() => setClipSetupOpen(true)}
+              className="text-[11px] font-mono text-zinc-400 hover:text-[#f0956f] border border-[#29272b] px-2 py-1 rounded bg-[#131214]"
+              title="Clip rendering: FFmpeg, voice, free stock-footage and caption keys"
+            >
+              Clip setup
+            </button>
+          )}
           <button
             onClick={() => setIsTerminalOpen((v) => !v)}
             className="text-[11px] font-mono text-zinc-400 hover:text-[#d2b278] border border-[#29272b] px-2 py-1 rounded bg-[#131214]"
@@ -1236,7 +1616,10 @@ export default function Page() {
         </div>
       </header>
 
-      {/* Main Workspace Layout */}
+      {memoryOpen && <MemoryBank refreshKey={memoryVersion} />}
+
+      {/* Main Workspace Layout — hidden, not unmounted, while the Memory Bank is open */}
+      <div style={{ display: memoryOpen ? 'none' : 'contents' }}>
       {showWelcome && messages.length === 0 ? (
         <WelcomeScreen
           key={appMode}
@@ -1248,6 +1631,8 @@ export default function Page() {
             handleSendMessage(text)
           }}
           disabled={isStreaming}
+          recentSessions={recentSessions}
+          onOpenSession={(id) => void resumeSession(id)}
         />
       ) : (
       <div
@@ -1270,6 +1655,7 @@ export default function Page() {
               />
               {activeRemark && (
                 <AvatarRemark
+                  key={activeRemark.text}
                   text={activeRemark.text}
                   mood={activeRemark.mood as 'curious' | 'thoughtful' | 'concentrating' | 'attentive' | 'processing' | 'patient' | 'engaged' | 'idle'}
                   durationMs={activeRemark.durationMs}
@@ -1327,7 +1713,7 @@ export default function Page() {
           <div className="absolute inset-0 z-1 overflow-hidden pointer-events-none">
             <ParticleNetwork particleColor="#80a9c1" lineColor="#80a9c1" particleCount={70} maxDistance={130} speed={0.3} />
           </div>
-          <div className="transcript">
+          <div className="transcript" ref={transcriptRef} onScroll={onTranscriptScroll}>
             <div className="date-marker">
               {/* Date and Time Live Update */}
               <span>
@@ -1363,31 +1749,96 @@ export default function Page() {
                     {msg.role === 'user' ? 'You' : 'Hermione'} <span>{msg.time || 'now'}</span>
                   </div>
 
-                  {/* Thinking trace streamed from message.thinking */}
-                  {msg.thinkingText && (
-                    <details className="mt-2 mb-3 bg-[#131215] border border-[#2b2733] rounded-md overflow-hidden group">
-                      <summary className="px-2.5 py-1.5 text-[11px] font-mono text-[#aa9db5] flex items-center gap-1.5 cursor-pointer hover:bg-[#1a1820] select-none transition-colors">
-                        <Sparkles className="size-3 text-[#b998d3]" />
-                        <span>Thinking process</span>
-                        <ChevronDown className="size-3 ml-auto transition-transform group-open:rotate-180 text-zinc-500" />
-                      </summary>
-                      <div className="px-3 py-2 text-[11px] font-mono text-[#8d8396] bg-[#0c0b0e] border-t border-[#201d26] whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto">
-                        {msg.thinkingText}
-                      </div>
-                    </details>
+                  {/* What she's doing right now (spinner + live line + timer), then "Thought for 14s · 3 steps" */}
+                  {msg.role === 'agent' && (
+                    <ThinkingTrace
+                      steps={msg.steps || []}
+                      tools={msg.toolCards || []}
+                      running={!!msg.activeSince}
+                      workedMs={msg.workedMs || 0}
+                      activeSince={msg.activeSince}
+                      writing={!!msg.text}
+                      fallbackThinking={msg.steps?.length ? undefined : msg.thinkingText}
+                      renderTool={(id) => {
+                        const card = msg.toolCards?.find((c) => c.callId === id)
+                        return card ? <ActionCard card={card} /> : null
+                      }}
+                    />
                   )}
 
-                  <p className="whitespace-pre-wrap">
-                    {msg.text ||
-                      (isStreaming && i === messages.length - 1
-                        ? msg.thinkingText
-                          ? 'Working through it…'
-                          : 'Generating response…'
-                        : '')}
-                  </p>
+                  {/* Her task checklist */}
+                  {msg.plan && msg.plan.length > 0 && <PlanCard items={msg.plan} live={!!msg.activeSince} />}
 
-                  {/* Real tool cards */}
-                  {msg.toolCards?.map((card) => <ActionCard key={card.callId} card={card} />)}
+                  {msg.questions?.filter((q) => q.answer).map((q) => (
+                    <QuestionCard key={q.callId} q={q} busy={isStreaming} onAnswer={handleAnswer} />
+                  ))}
+
+                  {msg.role === 'user' ? (
+                    <div className="user-bubble">{msg.text}</div>
+                  ) : msg.text ? (
+                    <div className="agent-bubble">
+                      <ChatMarkdown text={msg.text} onRunInTerminal={runInTerminal} />
+                    </div>
+                  ) : null}
+
+                  {/* Clips she rendered */}
+                  {msg.clips?.map((c) => <ClipCard key={c.jobId} clip={c} />)}
+
+                  {msg.role === 'agent' && msg.stopped && <div className="reply-stopped">Stopped</div>}
+
+                  {/* Memories she saved while answering */}
+                  {msg.memories?.map((m) => (
+                    <div key={m.id} className={`memory-note ${m.undone ? 'is-undone' : ''}`}>
+                      <Brain className="size-3.5 flex-none" />
+                      <span className="flex-none">{m.undone ? 'Forgotten:' : m.created ? 'Saved to memory:' : 'Memory updated:'}</span>
+                      <span className="t" title={m.text}>{m.text}</span>
+                      {!m.undone && m.created ? (
+                        <button type="button" onClick={() => undoMemory(i, m.id)}>Undo</button>
+                      ) : !m.undone ? (
+                        <button type="button" onClick={() => setMemoryOpen(true)}>View</button>
+                      ) : null}
+                    </div>
+                  ))}
+
+                  {/* Copy · Retry · Read aloud · 👍/👎 once the reply is finished */}
+                  {msg.role === 'agent' && msg.done && (msg.text || msg.stopped) && !(isStreaming && i === messages.length - 1) && (
+                    <ReplyActions
+                      id={`${sessionId}:${i}`}
+                      text={msg.text}
+                      rating={ratings[`${sessionId}:${i}`]}
+                      onRate={(r) => {
+                        const key = `${sessionId}:${i}`
+                        rate(key, r)
+                        sendRating(key, r, msg)
+                        setFeedbackFor(r === 'down' ? key : feedbackFor === key ? null : feedbackFor)
+                      }}
+                      onRetry={
+                        i === messages.length - 1 && !isStreaming && lastUserText
+                          ? () => handleSendMessage(lastUserText, { retry: true })
+                          : undefined
+                      }
+                    />
+                  )}
+
+                  {/* 👎 → "what went wrong?"; lessons it proposed */}
+                  {feedbackFor === `${sessionId}:${i}` && msg.role === 'agent' && (
+                    <ReplyFeedback
+                      replyKey={`${sessionId}:${i}`}
+                      onClose={() => setFeedbackFor(null)}
+                      onSubmit={(reasons, other) => {
+                        sendRating(`${sessionId}:${i}`, 'down', msg, { reasons, other })
+                        setFeedbackFor(null)
+                      }}
+                    />
+                  )}
+                  {proposedLessons[`${sessionId}:${i}`]?.map((text) => (
+                    <div key={text} className="memory-note">
+                      <Lightbulb className="size-3.5 flex-none" />
+                      <span className="flex-none">Lesson proposed:</span>
+                      <span className="t" title={text}>{text}</span>
+                      <button type="button" onClick={() => setMemoryOpen(true)}>Review</button>
+                    </div>
+                  ))}
 
                   {/* Real permission gates */}
                   {msg.approvals && msg.approvals.length > 0 && (
@@ -1402,6 +1853,11 @@ export default function Page() {
                       ))}
                     </div>
                   )}
+
+                  {/* Hermione's open questions (ask_user); answered ones sit above the reply */}
+                  {msg.questions?.filter((q) => !q.answer).map((q) => (
+                    <QuestionCard key={q.callId} q={q} busy={isStreaming} onAnswer={handleAnswer} />
+                  ))}
                 </div>
               </div>
             ))}
@@ -1409,8 +1865,14 @@ export default function Page() {
 
           {/* Composer */}
           <div className="composer-wrap">
+            {!atBottom && (
+              <button type="button" className="jump-latest" onClick={() => scrollToBottom('smooth')}>
+                <ArrowDown className="size-3.5" /> Jump to latest
+              </button>
+            )}
             <div className="composer">
               <textarea
+                ref={composerRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -1431,9 +1893,15 @@ export default function Page() {
                 rows={1}
                 spellCheck={false}
               />
-              <button className="send-button" onClick={() => handleSendMessage()} disabled={isStreaming} aria-label="Send">
-                <ArrowUp />
-              </button>
+              {isStreaming ? (
+                <button className="send-button is-stop" onClick={stopRun} aria-label="Stop" title="Stop Hermione">
+                  <Square />
+                </button>
+              ) : (
+                <button className="send-button" onClick={() => handleSendMessage()} disabled={!input.trim()} aria-label="Send">
+                  <ArrowUp />
+                </button>
+              )}
             </div>
             <div className="composer-meta flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -1507,6 +1975,17 @@ export default function Page() {
               </div>
 
               <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+                <button
+                  type="button"
+                  onClick={voice.toggle}
+                  className={`voice-toggle ${voice.enabled ? 'is-on' : ''}`}
+                  aria-pressed={voice.enabled}
+                  title={voice.enabled ? 'Voice on: Hermione speaks while long tasks run and sums up each answer. Click to mute.' : 'Voice off. Click to let Hermione speak.'}
+                >
+                  {voice.enabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
+                  Voice
+                </button>
+                {voice.enabled && <VoiceModelPicker groups={modelGroups} />}
                 <TokenCounter chat={chatUsage} today={todayUsage} />
                 <span>
                   Enter to send <kbd>↵</kbd>
@@ -1531,6 +2010,17 @@ export default function Page() {
               onPointerCancel={endResize}
               onDoubleClick={resetWidth}
             />
+            {liveAvailable ? (
+              /* A real Chrome tab you and Hermione share (falls back to the proxied preview below). */
+              <LivePreview
+                sessionId={sessionId}
+                onUrlChange={(url, title) => {
+                  setPreviewUrl(url)
+                  setPreviewTitle(title || url)
+                }}
+              />
+            ) : (
+            <>
             <form
               className="url-bar"
               onSubmit={(event) => {
@@ -1598,10 +2088,13 @@ export default function Page() {
                 <Pause className="size-3" /> Close page
               </button>
             </div>
+            </>
+            )}
           </aside>
         )}
       </div>
       )}
+      </div>
 
       {/* The shell both sides share */}
       <div style={{ position: isTerminalOpen ? 'relative' : 'static', zIndex: isTerminalOpen ? 50 : 'auto' }}>
@@ -1652,6 +2145,9 @@ export default function Page() {
 
       {/* Chrome profile used for web searches */}
       <BrowserSettings isOpen={isBrowserModalOpen} onClose={() => setIsBrowserModalOpen(false)} />
+
+      {/* Clip studio: FFmpeg / voice status and the free keys */}
+      <ClipSetup open={clipSetupOpen} onClose={() => setClipSetupOpen(false)} />
 
       {/* Provider settings (custom endpoint + token) */}
       <ProviderSettings

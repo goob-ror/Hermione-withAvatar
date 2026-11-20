@@ -3,6 +3,7 @@ import { listModels, openaiChat, type TokenUsage } from './openai'
 import { estimateTokens, recordUsage } from './usage'
 import { hiddenReason } from './modelFilter'
 import { exhaustedMark, markExhausted, nextCandidate } from './failover'
+import { repairJson } from './json'
 
 /**
  * One-shot, non-streaming completion on any configured provider — for
@@ -16,6 +17,8 @@ export async function completeText(opts: {
   prompt: string
   temperature?: number
   timeoutMs?: number
+  /** Passed through as reasoning_effort (OpenAI-compatible providers only). */
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
 }): Promise<{ text: string; model: string; providerId: string }> {
   let provider = getProvider(opts.providerId ?? activeProviderId())
 
@@ -43,7 +46,7 @@ export async function completeText(opts: {
 
   let text = ''
   try {
-    const out = await callOnce(provider, key, model, messages, opts.temperature ?? 0.4, signal)
+    const out = await callOnce(provider, key, model, messages, opts.temperature ?? 0.4, signal, opts.reasoningEffort)
     text = out.text
     const used = out.usage ?? estimateTokens(messages, text)
     recordUsage(provider.id, used.input, used.output, !out.usage)
@@ -63,6 +66,7 @@ async function callOnce(
   messages: { role: 'system' | 'user'; content: string }[],
   temperature: number,
   signal: AbortSignal,
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high',
 ): Promise<{ text: string; usage?: TokenUsage }> {
   let text = ''
   let usage: TokenUsage | undefined
@@ -80,7 +84,7 @@ async function callOnce(
       usage = { input: Number(data.prompt_eval_count ?? 0), output: Number(data.eval_count ?? 0) }
     }
   } else {
-    const turn = await openaiChat({ baseUrl: provider.baseUrl, apiKey: key, model, messages, temperature, signal }, () => {})
+    const turn = await openaiChat({ baseUrl: provider.baseUrl, apiKey: key, model, messages, temperature, reasoningEffort, signal }, () => {})
     text = turn.content
     usage = turn.usage
   }
@@ -107,17 +111,4 @@ export function extractJson<T = unknown>(text: string): T | null {
   }
 }
 
-/**
- * Fix common LLM JSON slips:
- *   "term" (500+ searches)   → "term (500+ searches)"   (text after a closing quote)
- *   trailing commas before } or ]
- *   smart quotes used as delimiters
- */
-export function repairJson(text: string): string {
-  return text
-    .replace(/[“”]/g, '"')
-    .replace(/"([^"\n]*)"[ \t]*(\([^()\n]*\)|[^\s,:}\]"\n][^,}\]\n"]*?)(?=\s*[,}\]])/g, (_, inner, tail) =>
-      JSON.stringify(`${inner} ${String(tail).trim()}`),
-    )
-    .replace(/,\s*([}\]])/g, '$1')
-}
+export { repairJson }

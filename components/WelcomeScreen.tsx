@@ -10,6 +10,8 @@ import { ParticleNetwork } from './ParticleNetwork'
 import { ForgeIcon, type AppMode } from './ModeSwitcher'
 import { TrendRecommendations } from './TrendRecommendations'
 import { useEffect, useRef, useState } from 'react'
+import { greet } from '@/lib/voice/speaker'
+import { RecentSessions, type RecentSession } from './RecentSessions'
 
 export interface WelcomeScreenProps {
   userName?: string
@@ -19,6 +21,9 @@ export interface WelcomeScreenProps {
   /** Active model/provider — used if the trend recommendations need generating. */
   model?: string
   providerId?: string
+  /** This mode's latest sessions, to pick one up from the intro. */
+  recentSessions?: RecentSession[]
+  onOpenSession?: (id: string) => void
 }
 
 const PLATFORMS = ['YouTube Shorts', 'TikTok', 'Instagram Reels'] as const
@@ -40,6 +45,8 @@ export function WelcomeScreen({
   disabled,
   model,
   providerId,
+  recentSessions = [],
+  onOpenSession,
 }: WelcomeScreenProps) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const spokenRef = useRef(false)
@@ -53,30 +60,23 @@ export function WelcomeScreen({
   }, [])
 
   useEffect(() => {
-    // Speak the greeting via PiperTTS once
+    // Greet once per screen, in Hermione's natural voice (VoxCPM2). Cached
+    // greetings play instantly; with none cached yet it waits for the voice to
+    // load and makes one. Skipped if the operator starts chatting first
+    // (unmount) or turns Voice off; the backup voice speaks if VoxCPM2 can't.
     if (spokenRef.current) return
-    spokenRef.current = true
-
+    let cancelled = false
     const greeting = forge
-      ? `Welcome to the Content Forge, ${userName}. Pick a topic and let's find what's trending.`
-      : `Hey, ${userName}. I'm Hermione. Let's build something today.`
-    fetch('/api/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: greeting }),
+      ? `Welcome to the Content Forge, ${userName}. Pick a topic, and let's find what's trending.`
+      : `Hello, ${userName}. I'm Hermione. Let's build something today.`
+    // A cached greeting in her natural voice plays at once (up to 5 per screen,
+    // picked at random); the first few are made on the fly and saved.
+    void greet(forge ? 'forge' : 'chat', userName, greeting, () => cancelled).then(() => {
+      if (!cancelled) spokenRef.current = true
     })
-      .then((r) => (r.ok ? r.blob() : null))
-      .then((blob) => {
-        if (!blob) return
-        const url = URL.createObjectURL(blob)
-        const audio = new Audio(url)
-        audio.play().catch(() => {
-          /* user gesture required or audio blocked */
-        })
-      })
-      .catch(() => {
-        /* TTS unavailable */
-      })
+    return () => {
+      cancelled = true
+    }
   }, [userName, forge])
 
   /** In Forge, the chosen platforms ride along with the first message. */
@@ -201,6 +201,11 @@ export function WelcomeScreen({
           </div>
           <TrendRecommendations model={model} providerId={providerId} onPick={fillTopic} />
         </div>
+      )}
+
+      {/* Pick up an earlier chat / Forge project */}
+      {onOpenSession && (
+        <RecentSessions sessions={recentSessions} forge={forge} onOpen={onOpenSession} disabled={disabled} />
       )}
 
       {/* Footer hint */}

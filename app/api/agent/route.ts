@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { runAgent, systemPromptFor } from '@/lib/agent/loop'
+import { abandonPending, runAgent, systemPromptFor } from '@/lib/agent/loop'
 import { ensureSession, getSession, parseMode } from '@/lib/agent/session'
 import { agentStream } from '@/lib/agent/stream'
 import {
@@ -54,7 +54,8 @@ export async function GET(req: NextRequest) {
 
 /**
  * POST /api/agent — append a user message and run the agent loop.
- * Body: { sessionId, model, message, thinkingEffort?, providerId? }
+ * Body: { sessionId, model, message, thinkingEffort?, providerId?, retry? }
+ * retry: regenerate the answer to the last message instead of adding it again.
  * Returns an NDJSON stream of AgentEvent objects.
  */
 const AgentBody = z.object({
@@ -64,6 +65,7 @@ const AgentBody = z.object({
   thinkingEffort: ThinkingEffort.default('low'),
   providerId: id().optional(),
   mode: Mode.optional(),
+  retry: z.boolean().optional(),
 })
 
 export async function POST(req: NextRequest) {
@@ -90,7 +92,19 @@ export async function POST(req: NextRequest) {
     session.messages[0] = { role: 'system', content: prompt }
   }
 
-  session.messages.push({ role: 'user', content: message })
+  // Retry: drop the last answer (and its tool calls) and answer the same message again.
+  const lastUser = session.messages.map((m) => m.role).lastIndexOf('user')
+  if (body.retry && lastUser > 0 && session.messages[lastUser].content === message) {
+    session.messages.splice(lastUser + 1)
+    session.pending = undefined
+  } else {
+    // An open permission card or question is answered by this message instead.
+    abandonPending(session)
+    session.messages.push({ role: 'user', content: message })
+  }
 
-  return agentStream((emit) => runAgent(session, { thinkingEffort, providerId: resolvedProvider }, emit))
+  return agentStream(
+    (emit, signal) => runAgent(session, { thinkingEffort, providerId: resolvedProvider, signal }, emit),
+    req.signal,
+  )
 }

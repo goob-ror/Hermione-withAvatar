@@ -9,7 +9,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
     // Never touch the operator's real .hermione store, providers or Ollama.
     env: {
       HERMIONE_CONFIG_DIR: path.join(os.tmpdir(), `hermione-vitest-${process.pid}`),

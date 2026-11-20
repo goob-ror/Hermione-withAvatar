@@ -32,5 +32,5 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  return agentStream((emit) => resumeAgent(session, callId, decision, { thinkingEffort }, emit))
+  return agentStream((emit, signal) => resumeAgent(session, callId, decision, { thinkingEffort, signal }, emit), req.signal)
 }

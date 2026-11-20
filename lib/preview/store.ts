@@ -51,6 +51,8 @@ export function pageInfo(sessionId: string) {
 export interface CommandResult {
   ok: boolean
   output: string
+  /** The action triggered a real navigation; the server reloads it through the preview. */
+  navigate?: string
 }
 
 interface Deferred {
@@ -77,12 +79,12 @@ export function awaitCommand(commandId: string, timeoutMs = 30000): Promise<Comm
   })
 }
 
-export function resolveCommand(commandId: string, ok: boolean, output: string): boolean {
+export function resolveCommand(commandId: string, ok: boolean, output: string, navigate?: string): boolean {
   const deferred = COMMANDS.get(commandId)
   if (!deferred) return false
   clearTimeout(deferred.timer)
   COMMANDS.delete(commandId)
-  deferred.resolve({ ok, output })
+  deferred.resolve({ ok, output, ...(navigate ? { navigate } : {}) })
   return true
 }
 

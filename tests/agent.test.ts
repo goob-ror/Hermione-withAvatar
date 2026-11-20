@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyExhaustion, parseRetryMs } from '@/lib/agent/failover'
 import { compactHistory, approxTokens } from '@/lib/agent/history'
 import { extractJson } from '@/lib/agent/complete'
+import { compatTools } from '@/lib/agent/openai'
 import { hiddenReason, isNotChatCapableError } from '@/lib/agent/modelFilter'
 import type { ChatMessage } from '@/lib/agent/types'
 
@@ -10,6 +11,8 @@ describe('classifyExhaustion', () => {
     ['failed (429): RESOURCE_EXHAUSTED You exceeded your current quota', 'quota'],
     ['failed (429): {"code":"insufficient_quota","message":"check your plan and billing details"}', 'billing'],
     ['failed (402): Your credit balance is too low', 'billing'],
+    // Gemini free tier: one model's quota, even though the text mentions billing.
+    ['failed (429): You exceeded your current quota, please check your plan and billing details.', 'quota'],
     ['failed (429): Rate limit reached on tokens per minute. Please try again in 1m30s.', 'rate'],
     ['failed (401) — check the API token', undefined],
     ['failed (400): Invalid argument', undefined],
@@ -111,5 +114,44 @@ describe('model filter', () => {
     expect(isNotChatCapableError('"nomic-embed-text" does not support chat')).toBe(true)
     expect(isNotChatCapableError('Incorrect API key provided')).toBe(false)
     expect(isNotChatCapableError('tools are not supported for this model')).toBe(false)
+  })
+})
+
+describe('compatTools (routers that drop argument-less tool calls)', () => {
+  const tool = (parameters: unknown) => ({ type: 'function', function: { name: 't', description: 'd', parameters } })
+
+  it.each([
+    ['empty properties + required', { type: 'object', properties: {}, required: [] }],
+    ['empty properties', { type: 'object', properties: {} }],
+    ['no properties at all', { type: 'object' }],
+  ])('gives a parameter-less tool a required "reason" (%s)', (_name, parameters) => {
+    const [out] = compatTools([tool(parameters)]) as any[]
+    expect(Object.keys(out.function.parameters.properties)).toEqual(['reason'])
+    expect(out.function.parameters.required).toEqual(['reason'])
+    expect(out.function.name).toBe('t')
+  })
+
+  it('keeps optional parameters and adds a required "reason" when nothing is required', () => {
+    const [out] = compatTools([tool({ type: 'object', properties: { path: { type: 'string' } } })]) as any[]
+    expect(Object.keys(out.function.parameters.properties)).toEqual(['path', 'reason'])
+    expect(out.function.parameters.required).toEqual(['reason'])
+  })
+
+  it('reuses an existing "reason" property instead of overwriting it', () => {
+    const own = { type: 'string', description: 'shown to the operator' }
+    const [out] = compatTools([tool({ type: 'object', properties: { reason: own } })]) as any[]
+    expect(out.function.parameters.properties.reason).toBe(own)
+  })
+
+  it('leaves tools that already have a required parameter untouched', () => {
+    const t = tool({ type: 'object', properties: { url: { type: 'string' } }, required: ['url'] })
+    expect(compatTools([t])[0]).toBe(t)
+  })
+
+  it('every real Hermione tool ends up with at least one required argument', async () => {
+    const { toolSchemas } = await import('@/lib/tools')
+    for (const t of compatTools(toolSchemas('chat')) as any[]) {
+      expect(t.function.parameters.required?.length).toBeGreaterThan(0)
+    }
   })
 })

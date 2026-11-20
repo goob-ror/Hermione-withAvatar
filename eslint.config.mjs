@@ -28,7 +28,6 @@ export default defineConfig([
   globalIgnores([
     '.next/**',
     'node_modules/**',
-    'PiperTTS/**',
     'public/**/*.min.js',
     '.hermione/**',
     'next-env.d.ts',

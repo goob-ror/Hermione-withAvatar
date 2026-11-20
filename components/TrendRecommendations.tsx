@@ -182,7 +182,7 @@ export function TrendRecommendations({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
         {loading && !topics.length
           ? Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="h-[52px] rounded-lg border border-[#232126] bg-[#141316] animate-pulse" />
+              <div key={i} className="h-[92px] rounded-lg border border-[#232126] bg-[#141316] animate-pulse" />
             ))
           : topics.map((t) => (
               <button
@@ -191,13 +191,18 @@ export function TrendRecommendations({
                 title={`${t.angle}${t.signal ? `\n\nSignal: ${t.signal}` : ''}`}
                 className="text-left px-3 py-2 rounded-lg border border-[#2b292e] bg-[#151416]/90 hover:border-[#6b4a3c] hover:bg-[#1c1715] transition-colors group"
               >
-                <span className="block text-[12px] text-zinc-100 leading-snug group-hover:text-white line-clamp-2">
+                <span className="flex items-center gap-1.5 text-[10px] font-mono text-zinc-500">
+                  <span className="px-1.5 rounded-full border border-[#4a332a] bg-[#1f1613] text-[#f0b9a0] whitespace-nowrap">{t.category}</span>
+                  {t.signal && <span className="truncate">{t.signal}</span>}
+                </span>
+                <span className="block mt-1 text-[12.5px] font-medium text-zinc-100 leading-snug group-hover:text-white line-clamp-2">
                   {t.headline}
                 </span>
-                <span className="block mt-0.5 text-[10px] font-mono text-zinc-500 truncate">
-                  {t.category}
-                  {t.signal ? ` · ${t.signal}` : ''}
-                </span>
+                {t.angle && (
+                  <span className="block mt-1 text-[11px] text-zinc-400 leading-snug line-clamp-2 group-hover:text-zinc-300">
+                    {t.angle}
+                  </span>
+                )}
               </button>
             ))}
       </div>

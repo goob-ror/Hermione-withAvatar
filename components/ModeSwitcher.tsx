@@ -1,6 +1,7 @@
 'use client'
 
 import type { SVGProps } from 'react'
+import { Brain } from 'lucide-react'
 
 export type AppMode = 'chat' | 'forge'
 
@@ -62,15 +63,22 @@ const MODES: { id: AppMode; label: string; hint: string; Icon: typeof ForgeIcon 
   { id: 'forge', label: 'Content Forge', hint: 'Find viral topics and turn them into clips', Icon: ForgeIcon },
 ]
 
-/** Segmented Chat / Content Forge switch. Each mode keeps its own sessions. */
+/**
+ * Segmented Chat / Content Forge / Memory Bank switch. Chat and Forge keep
+ * their own sessions; the Memory Bank is a page shown over the workspace.
+ */
 export function ModeSwitcher({
   mode,
   onChange,
   disabled,
+  memoryOpen = false,
+  onMemory,
 }: {
   mode: AppMode
   onChange: (mode: AppMode) => void
   disabled?: boolean
+  memoryOpen?: boolean
+  onMemory?: () => void
 }) {
   return (
     <div
@@ -79,7 +87,7 @@ export function ModeSwitcher({
       className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#131214] border border-[#29272b]"
     >
       {MODES.map(({ id, label, hint, Icon }) => {
-        const active = mode === id
+        const active = mode === id && !memoryOpen
         const accent = id === 'forge' ? 'text-[#f0956f]' : 'text-[#d2b278]'
         return (
           <button
@@ -87,7 +95,7 @@ export function ModeSwitcher({
             role="tab"
             aria-selected={active}
             title={hint}
-            disabled={disabled && !active}
+            disabled={disabled && mode !== id}
             onClick={() => !active && onChange(id)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               active
@@ -96,10 +104,26 @@ export function ModeSwitcher({
             }`}
           >
             <Icon className={`size-3.5 ${active ? accent : ''}`} />
-            <span className="whitespace-nowrap">{label}</span>
+            <span className="whitespace-nowrap max-lg:sr-only">{label}</span>
           </button>
         )
       })}
+      {onMemory && (
+        <button
+          role="tab"
+          aria-selected={memoryOpen}
+          title="What Hermione remembers about you, and your notes"
+          onClick={() => !memoryOpen && onMemory()}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-colors ${
+            memoryOpen
+              ? 'bg-[#232126] text-white shadow-[inset_0_0_0_1px_#35323a]'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#1b1a1d]'
+          }`}
+        >
+          <Brain className={`size-3.5 ${memoryOpen ? 'text-[#b291e8]' : ''}`} />
+          <span className="whitespace-nowrap max-lg:sr-only">Memory Bank</span>
+        </button>
+      )}
     </div>
   )
 }
