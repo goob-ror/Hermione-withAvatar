@@ -97,3 +97,12 @@ AGENTS.md
 CLAUDE.md
 TODO.local.md
 notes.local/
+
+# FFmpeg portable build (downloaded)
+tools/ffmpeg/
+
+# VoxCPM2 voice model environment (downloaded, large)
+tools/voxcpm/
+
+# Python bytecode
+__pycache__/

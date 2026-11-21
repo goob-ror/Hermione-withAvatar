@@ -92,7 +92,6 @@ const SKIP_CONTENT = [
   /^scripts\/publish-check\.mjs$/,
   /^\.env\.example$/,
   /\.min\.(js|css)$/,
-  /^PiperTTS\//,
   /^public\/live2d\./,
   /^public\/live2dcubismcore/,
   /\.(png|jpe?g|gif|webp|ico|motion3\.json)$/i,

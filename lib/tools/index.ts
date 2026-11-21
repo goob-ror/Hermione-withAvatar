@@ -6,6 +6,12 @@ import { pageAct, pageOpen, pageRead } from './page'
 import { terminalInterrupt, terminalRead, terminalRun } from './terminal'
 import { getTime, getCalendar } from './time'
 import { webSearch } from './search'
+import { askUser } from './ask'
+import { imageSearch } from './images'
+import { memoryForget, memorySave, notesRead, notesSearch } from './memory'
+import { updatePlan } from './plan'
+import { videoInspect, videoSearch } from './video'
+import { clipRender, clipUpload } from './clip'
 
 export const TOOLS: ToolDef[] = [
   fsList,
@@ -15,6 +21,7 @@ export const TOOLS: ToolDef[] = [
   shellRun,
   webFetch,
   webSearch,
+  imageSearch,
   siteInspect,
   pageOpen,
   pageRead,
@@ -24,6 +31,16 @@ export const TOOLS: ToolDef[] = [
   terminalInterrupt,
   getTime,
   getCalendar,
+  askUser,
+  memorySave,
+  memoryForget,
+  notesSearch,
+  notesRead,
+  updatePlan,
+  videoSearch,
+  videoInspect,
+  clipRender,
+  clipUpload,
 ]
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]))
@@ -38,10 +55,15 @@ export function isKnownTool(name: string): boolean {
  * terminal and file-writing tools it never uses.
  */
 const FORGE_TOOLS = new Set([
-  'web_search', 'web_fetch', 'site_inspect',
+  'web_search', 'image_search', 'web_fetch', 'site_inspect',
   'page_open', 'page_read', 'page_act',
   'fs_list', 'fs_read',
   'get_time', 'get_calendar',
+  'ask_user',
+  'memory_save', 'memory_forget', 'notes_search', 'notes_read',
+  'update_plan',
+  'video_search', 'video_inspect',
+  'clip_render', 'clip_upload',
 ])
 
 export type ToolMode = 'chat' | 'forge'

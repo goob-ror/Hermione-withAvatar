@@ -58,7 +58,7 @@ const LLM_TTL_MS = 48 * 60 * 60 * 1000
 const FALLBACK_TTL_MS = 3 * 60 * 60 * 1000
 
 /** Bump when the prompt changes so old caches are regenerated, not served. */
-const PROMPT_VERSION = 2
+const PROMPT_VERSION = 3
 
 /** One cache per country + language + prompt version. */
 function cacheFile(country: string, lang: string): string {
@@ -93,8 +93,12 @@ function clean(text: unknown, max: number): string {
   return String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, max)
 }
 
-function normalizeTopics(list: unknown): TopicRec[] {
+/** At most this many cards per category, so one busy sports night doesn't fill every slot. */
+const MAX_PER_CATEGORY = 2
+
+export function normalizeTopics(list: unknown): TopicRec[] {
   if (!Array.isArray(list)) return []
+  const perCategory = new Map<string, number>()
   return list
     .map((t: any) => ({
       headline: clean(t?.headline ?? t?.title, 90),
@@ -103,6 +107,12 @@ function normalizeTopics(list: unknown): TopicRec[] {
       signal: clean(t?.signal ?? t?.basis, 110),
     }))
     .filter((t) => t.headline)
+    .filter((t) => {
+      const key = t.category.toLowerCase()
+      const n = perCategory.get(key) ?? 0
+      perCategory.set(key, n + 1)
+      return n < MAX_PER_CATEGORY
+    })
     .slice(0, 4)
 }
 
@@ -122,7 +132,7 @@ function buildPrompt(
   lang: string,
 ): string {
   // Plain format (no quotes/parentheses) so models don't copy it into broken JSON.
-  const lines = signals.slice(0, 15).map((s, i) => {
+  const lines = signals.slice(0, 25).map((s, i) => {
     const news = s.news.length ? ` — news: ${s.news.join(' | ')}` : ''
     return `${i + 1}. ${s.term} · ${s.traffic || 'n/a'} searches${news}`
   })
@@ -136,7 +146,9 @@ function buildPrompt(
     '',
     'Rules:',
     `- Write headline and angle entirely in ${languageName(lang)}. Translate phrases from the signals; only proper names (people, teams, brands, events) keep their original spelling.`,
-    '- TODAY topics must come from the signals above. Give at least 3 when the signals allow; merge true duplicates only; skip anything too thin for short-form video.',
+    '- TODAY topics must come from the signals above. Give 4 when the signals allow; merge true duplicates only; skip anything too thin for short-form video.',
+    `- Mix it up: at most 2 topics from the same category, and cover different areas (entertainment, lifestyle, tech, local news, sports …) when the signals allow. Prefer stories about ${countryName} itself — local people, brands, events, shows — over foreign sports results that are only being searched there.`,
+    '- Several games or matches from one league count as ONE topic at most (pick the biggest).',
     '- TOMORROW topics: stories from the signals that are still building, or events scheduled for tomorrow in this country that you are confident about (matches, releases, holidays). Never invent news.',
     '- headline: catchy, max 8 words, written for a short-form creator. Keep names in their original spelling.',
     '- angle: one sentence on the hook a 30-60 s video could use.',

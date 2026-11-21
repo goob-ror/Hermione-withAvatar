@@ -1,5 +1,5 @@
 /**
- * TTS provider abstraction: supports local PiperTTS and Cloudflare Workers AI.
+ * TTS provider abstraction: supports Hermione's local voice (VoxCPM2, via /api/tts) and Cloudflare Workers AI.
  */
 
 export type TTSProviderKind = 'local' | 'cloudflare' | 'skip'

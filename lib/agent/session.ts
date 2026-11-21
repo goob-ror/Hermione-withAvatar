@@ -8,6 +8,8 @@ export function parseMode(value: unknown): SessionMode {
 }
 
 export interface PendingApproval {
+  /** A gated tool waiting for approve/deny, or an ask_user question waiting for an answer. */
+  kind?: 'approval' | 'question'
   callId: string
   tool: string
   args: Record<string, any>

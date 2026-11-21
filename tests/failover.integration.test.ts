@@ -3,7 +3,12 @@ import http from 'http'
 import path from 'path'
 import type { AddressInfo } from 'net'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import os from 'os'
 import { configDir } from '@/lib/agent/providers'
+
+// Each integration file gets its own config dir: files run in parallel and
+// would otherwise overwrite each other's providers.json.
+process.env.HERMIONE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hermione-it-'))
 
 /**
  * Two fake OpenAI-compatible providers: A answers every chat with a real-shaped

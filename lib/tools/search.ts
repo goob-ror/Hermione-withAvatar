@@ -176,6 +176,19 @@ async function searxngSearch(instance: string, query: string, maxResults: number
 
 /* ---------------- Tool ---------------- */
 
+/** Plain web results for other tools (DuckDuckGo, then Bing). Empty on failure. */
+export async function quickSearch(query: string, maxResults = 8, timeRange?: TimeRange): Promise<SearchResult[]> {
+  for (const fn of [duckDuckGoSearch, bingSearch]) {
+    try {
+      const results = await fn(query, maxResults, timeRange)
+      if (results.length) return results
+    } catch {
+      /* try the next backend */
+    }
+  }
+  return []
+}
+
 export const webSearch: ToolDef = {
   name: 'web_search',
   description:

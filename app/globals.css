@@ -475,7 +475,10 @@ button {
   border-right: 1px solid #202023;
   height: 100%;
   max-height: 100vh;
-  overflow: hidden;
+  /* clip, not hidden: a "hidden" box can still be scrolled by focus() or
+     scrollIntoView() on something inside it, which pushed the transcript and
+     composer up and left a gap at the bottom. Only .transcript scrolls. */
+  overflow: clip;
 }
 
 .chat-column::before {
@@ -1278,8 +1281,17 @@ body.is-resizing {
       grid-template-columns: 190px minmax(450px, 1fr);
    }
 
+   /* No room to show the preview here — but Hermione still needs the page laid
+      out to read and act on it (a display:none iframe has no layout at all), so
+      keep it rendered off-screen at a desktop size, invisible and unclickable. */
    .preview-panel {
-      display: none;
+      position: fixed;
+      left: -10000px;
+      top: 0;
+      width: 1024px;
+      height: 768px;
+      visibility: hidden;
+      pointer-events: none;
    }
 }
 

@@ -49,6 +49,21 @@ function parseUrl(input: string): URL {
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
 
+/** The page's own preview picture (og:image / twitter:image), as a line she can paste. */
+export function pageImage(html: string, base: URL | string): string | undefined {
+  const m =
+    /<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image)["'][^>]*content=["']([^"']+)["']/i.exec(html) ||
+    /<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["']/i.exec(html)
+  if (!m) return undefined
+  try {
+    const url = new URL(m[1].replace(/&amp;/g, '&'), base)
+    if (!/^https?:$/.test(url.protocol)) return undefined
+    return `image: ![page picture](${url.toString().replace(/[()\s]/g, encodeURIComponent)})`
+  } catch {
+    return undefined
+  }
+}
+
 export const webFetch: ToolDef = {
   name: 'web_fetch',
   description:
@@ -108,7 +123,7 @@ export const webFetch: ToolDef = {
       const d = distill(raw, { baseUrl: finalUrl.toString(), maxChars: 60000 })
       const head = offset
         ? [`(continuing at char ${offset})`]
-        : [d.title && `title: ${d.title}`, d.description && `description: ${d.description}`].filter(Boolean)
+        : [d.title && `title: ${d.title}`, d.description && `description: ${d.description}`, pageImage(raw, finalUrl)].filter(Boolean)
       body = [...head, '', windowed(d.text, Math.min(d.charCount, 60000))].join('\n')
       scanText = `${d.title}\n${d.text}`
     } else {

@@ -1,5 +1,6 @@
 import type { ChatMessage, Emit } from './types'
 import { hiddenReason } from './modelFilter'
+import { splitThinking, ThinkTagSplitter } from './thinkSplit'
 
 /**
  * OpenAI-compatible transport.
@@ -35,6 +36,8 @@ export interface CustomChatOptions {
   tools?: unknown[]
   thinking?: boolean
   temperature?: number
+  /** Sent as `reasoning_effort` (e.g. "none" turns Gemini's thinking off for fast background calls). */
+  reasoningEffort?: 'none' | 'minimal' | 'low' | 'medium' | 'high'
   signal?: AbortSignal
 }
 
@@ -344,6 +347,39 @@ interface AccumToolCall {
   args: string
 }
 
+/**
+ * Some OpenAI-compatible routers (seen with 9router's Kiro backend) break on
+ * argument-less tool calls:
+ *   - a tool with no parameters at all → the whole response comes back empty;
+ *   - a call whose arguments are `{}` → the call is silently dropped.
+ * So every tool without a required parameter gets a required `reason` string
+ * ("why you're calling this", a few words). Calls always carry arguments, the
+ * tools ignore the field (terminal_interrupt already uses it), and every
+ * provider accepts the schema.
+ */
+const REASON = { type: 'string', description: 'Why you are calling this tool, in a few words.' }
+
+export function compatTools(tools: unknown[]): unknown[] {
+  return tools.map((tool: any) => {
+    const params = tool?.function?.parameters
+    if (!params || typeof params !== 'object') return tool
+    const required: string[] = Array.isArray(params.required) ? params.required : []
+    if (required.length) return tool
+    return {
+      ...tool,
+      function: {
+        ...tool.function,
+        parameters: {
+          ...params,
+          type: 'object',
+          properties: { ...(params.properties ?? {}), reason: params.properties?.reason ?? REASON },
+          required: ['reason'],
+        },
+      },
+    }
+  })
+}
+
 /** Hosts that rejected `stream_options` — never send it to them again. */
 const NO_STREAM_OPTIONS = new Set<string>()
 
@@ -363,10 +399,11 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
     stream: true,
     temperature: opts.temperature ?? 0.3,
   }
+  if (opts.reasoningEffort) payload.reasoning_effort = opts.reasoningEffort
   // Ask for real token counts in the final stream chunk.
   if (!NO_STREAM_OPTIONS.has(host)) payload.stream_options = { include_usage: true }
   if (opts.tools?.length) {
-    payload.tools = opts.tools
+    payload.tools = compatTools(opts.tools)
     payload.tool_choice = 'auto'
   }
 
@@ -375,7 +412,7 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
       method: 'POST',
       headers: authHeaders(opts.apiKey, url),
       body: JSON.stringify(payload),
-      signal: opts.signal ?? AbortSignal.timeout(180_000),
+      signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000),
     })
 
   let res = await send()
@@ -401,13 +438,16 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
   if (!contentType.includes('event-stream') && !contentType.includes('ndjson')) {
     const body = await res.json().catch(() => null)
     const choice = body?.choices?.[0]
-    const content: string = choice?.message?.content ?? ''
-    const thinking: string = choice?.message?.reasoning_content ?? choice?.message?.reasoning ?? ''
+    // Reasoning wrapped in <thinking> tags inside the text goes to the thinking channel.
+    const split = splitThinking(choice?.message?.content ?? '')
+    const content = split.content
+    const thinking: string = (choice?.message?.reasoning_content ?? choice?.message?.reasoning ?? '') + split.thinking
     if (thinking) emit({ type: 'thinking', delta: thinking })
     if (content) emit({ type: 'token', delta: content })
+    // Arguments stay raw (string or object): the loop parses them once and reports errors to the model.
     const toolCalls = (choice?.message?.tool_calls || []).map((call: any) => ({
       id: call.id,
-      function: { name: call.function?.name ?? '', arguments: call.function?.arguments ?? {} },
+      function: { name: call.function?.name ?? '', arguments: call.function?.arguments ?? '' },
     }))
     return { content, thinking, toolCalls, usage: readUsage(body?.usage) }
   }
@@ -419,6 +459,17 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
   let thinking = ''
   let usage: TokenUsage | undefined
   const calls: AccumToolCall[] = []
+  const splitter = new ThinkTagSplitter()
+  const emitSplit = (part: { content: string; thinking: string }) => {
+    if (part.thinking) {
+      thinking += part.thinking
+      emit({ type: 'thinking', delta: part.thinking })
+    }
+    if (part.content) {
+      content += part.content
+      emit({ type: 'token', delta: part.content })
+    }
+  }
 
   const consumeLine = (line: string) => {
     const trimmed = line.trim()
@@ -443,17 +494,16 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
       thinking += reasoning
       emit({ type: 'thinking', delta: reasoning })
     }
-    if (typeof delta.content === 'string' && delta.content) {
-      content += delta.content
-      emit({ type: 'token', delta: delta.content })
-    }
+    if (typeof delta.content === 'string' && delta.content) emitSplit(splitter.push(delta.content))
     if (Array.isArray(delta.tool_calls)) {
       for (const piece of delta.tool_calls) {
         const index = typeof piece.index === 'number' ? piece.index : calls.length
         if (!calls[index]) calls[index] = { name: '', args: '' }
         if (piece.id) calls[index].id = piece.id
         if (piece.function?.name) calls[index].name += piece.function.name
-        if (piece.function?.arguments) calls[index].args += piece.function.arguments
+        const a = piece.function?.arguments
+        // Some providers send the arguments object itself instead of JSON text.
+        if (a !== undefined && a !== null && a !== '') calls[index].args += typeof a === 'string' ? a : JSON.stringify(a)
       }
     }
   }
@@ -470,18 +520,10 @@ export async function openaiChat(opts: CustomChatOptions, emit: Emit): Promise<C
     }
   }
   if (buffer.trim()) consumeLine(buffer)
+  emitSplit(splitter.flush())
 
-  const toolCalls = calls
-    .filter((c) => c && c.name)
-    .map((c) => {
-      let args: any = {}
-      try {
-        args = c.args ? JSON.parse(c.args) : {}
-      } catch {
-        args = {}
-      }
-      return { id: c.id, function: { name: c.name, arguments: args } }
-    })
+  // Raw argument text: parsed once in the loop, where a bad payload is reported back to the model.
+  const toolCalls = calls.filter((c) => c && c.name).map((c) => ({ id: c.id, function: { name: c.name, arguments: c.args } }))
 
   return { content, thinking, toolCalls, usage }
 }

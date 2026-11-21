@@ -80,8 +80,19 @@ describe('approval routing', () => {
     for (const tool of ['web_search', 'web_fetch', 'site_inspect', 'page_open', 'page_read']) expect(tier(tool)).toBe('auto')
   })
 
-  it('splits page_act: reads free, actions (and unknown commands) ask', () => {
-    for (const command of ['text', 'query', 'count', 'title', 'links', 'url']) expect(tier('page_act', { command })).toBe('auto')
-    for (const command of ['click', 'fill', 'submit', 'scroll', 'bogus', '']) expect(tier('page_act', { command })).toBe('confirm')
+  it('splits page_act: snapshot/scroll/reads free, actions (and unknown commands) ask', () => {
+    for (const command of ['snapshot', 'options', 'scroll', 'text', 'query', 'count', 'title', 'links', 'url']) expect(tier('page_act', { command })).toBe('auto')
+    for (const command of ['click', 'fill', 'select', 'check', 'press', 'submit', 'bogus', '']) expect(tier('page_act', { command })).toBe('confirm')
+  })
+})
+
+describe('preview bridge URL injection', () => {
+  it('a hostile page URL can never close the bridge <script> tag', async () => {
+    const { bridgeScript } = await import('@/lib/preview/bridge')
+    const evil = 'https://x.example/</script><script>alert(1)</script>'
+    const html = bridgeScript(evil)
+    expect(html.match(/<\/script>/g)).toHaveLength(1)
+    const line = html.split('\n').find((l) => l.includes('var PAGE_URL'))!
+    expect(JSON.parse(line.trim().replace(/^var PAGE_URL = /, '').replace(/ \|\| location\.href$/, ''))).toBe(evil)
   })
 })

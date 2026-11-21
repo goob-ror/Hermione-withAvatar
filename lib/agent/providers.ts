@@ -51,10 +51,17 @@ export interface ProviderPublic {
   isDefault?: boolean
 }
 
+/**
+ * The model behind Hermione's voice subagent (lib/tts/voiceAgent.ts), separate
+ * from the chat model. Absent = automatic; `off` = deterministic rules only.
+ */
+export type VoiceModelSetting = { providerId: string; model: string } | { off: true }
+
 interface ProviderFile {
   version: 1
   activeId: string
   providers: Provider[]
+  voice?: VoiceModelSetting
 }
 
 export const KEY_MASK = '••••••••'
@@ -92,10 +99,18 @@ function readRaw(): ProviderFile {
     const parsed = JSON.parse(text)
     const providers: Provider[] = Array.isArray(parsed?.providers) ? parsed.providers : []
     const clean = providers.filter((p) => p && typeof p.id === 'string' && typeof p.baseUrl === 'string')
+    const v = parsed?.voice
+    const voice: VoiceModelSetting | undefined =
+      v?.off === true
+        ? { off: true }
+        : typeof v?.providerId === 'string' && typeof v?.model === 'string' && v.model
+          ? { providerId: v.providerId, model: v.model }
+          : undefined
     return {
       version: 1,
       activeId: typeof parsed?.activeId === 'string' ? parsed.activeId : defaultProvider().id,
       providers: clean.map((p) => ({ ...p, kind: p.kind === 'ollama' ? 'ollama' : 'openai' })),
+      ...(voice ? { voice } : {}),
     }
   } catch {
     return { version: 1, activeId: defaultProvider().id, providers: [] }
@@ -248,6 +263,22 @@ export function setActiveProvider(id: string): Provider {
   file.activeId = provider.id
   writeRaw(file)
   return provider
+}
+
+/** The saved voice-model choice (undefined = automatic). */
+export function voiceModelSetting(): VoiceModelSetting | undefined {
+  return readRaw().voice
+}
+
+/** Save the voice-model choice; null goes back to automatic. */
+export function setVoiceModel(setting: VoiceModelSetting | null) {
+  const file = readRaw()
+  if (setting && !('off' in setting) && !listProviders().some((p) => p.id === setting.providerId)) {
+    throw new Error(`unknown provider: ${setting.providerId}`)
+  }
+  if (setting) file.voice = setting
+  else delete file.voice
+  writeRaw(file)
 }
 
 export function deleteProvider(id: string): boolean {
