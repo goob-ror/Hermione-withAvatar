@@ -36,8 +36,15 @@ export interface ConnectorConfig {
   url?: string
   headers?: Record<string, string>
   enabled: boolean
-  /** Where it came from: added by you, a plugin, or imported from Claude. */
-  source: 'you' | 'plugin' | 'claude'
+  /**
+   * Treat every tool on this server as read-only (no approvals, no judge).
+   * For servers that only look things up (docs, search); you can turn it off.
+   */
+  trustReadOnly?: boolean
+  /** Where it came from: added by you, a plugin, imported from Claude, a default, or a marketplace. */
+  source: 'you' | 'plugin' | 'claude' | 'default' | 'registry'
+  /** MCP Registry name, when installed from the registry. */
+  registryName?: string
   pluginId?: string
   addedAt: number
 }
@@ -65,6 +72,17 @@ export interface Suggestion {
   at: number
 }
 
+/** A plugin/skill marketplace: a Git repo with .claude-plugin/marketplace.json. */
+export interface MarketplaceRecord {
+  id: string
+  url: string
+  label: string
+  /** Shipped with Hermione (can be removed). */
+  builtin?: boolean
+  /** Catalog format: Claude marketplace.json (default) or the Hermes Marketplace. */
+  kind?: 'claude' | 'hermes'
+}
+
 export interface CapabilitiesFile {
   version: 1
   tools: Record<string, ToolPolicy>
@@ -75,6 +93,11 @@ export interface CapabilitiesFile {
   connectors: ConnectorConfig[]
   plugins: PluginRecord[]
   suggestions: Suggestion[]
+  marketplaces: MarketplaceRecord[]
+  /** The recommended defaults were added once (removing them later sticks). */
+  defaultsSeeded?: boolean
+  /** Default marketplaces already offered once (so removing one sticks). */
+  seenMarketplaces?: string[]
 }
 
 export const capabilitiesDir = () => path.join(configDir(), 'capabilities')
@@ -82,7 +105,7 @@ const file = () => path.join(capabilitiesDir(), 'config.json')
 export const ownSkillsDir = () => path.join(capabilitiesDir(), 'skills')
 export const pluginsDir = () => path.join(capabilitiesDir(), 'plugins')
 
-const empty = (): CapabilitiesFile => ({ version: 1, tools: {}, skillSources: [], skills: {}, connectors: [], plugins: [], suggestions: [] })
+const empty = (): CapabilitiesFile => ({ version: 1, tools: {}, skillSources: [], skills: {}, connectors: [], plugins: [], suggestions: [], marketplaces: [] })
 
 let cache: { file: string; mtime: number; data: CapabilitiesFile } | null = null
 
@@ -108,6 +131,9 @@ export function loadCapabilities(): CapabilitiesFile {
       connectors: Array.isArray(raw?.connectors) ? raw.connectors : [],
       plugins: Array.isArray(raw?.plugins) ? raw.plugins : [],
       suggestions: Array.isArray(raw?.suggestions) ? raw.suggestions : [],
+      marketplaces: Array.isArray(raw?.marketplaces) ? raw.marketplaces : [],
+      ...(raw?.defaultsSeeded ? { defaultsSeeded: true } : {}),
+      ...(Array.isArray(raw?.seenMarketplaces) ? { seenMarketplaces: raw.seenMarketplaces } : {}),
     }
   } catch {
     /* unreadable: start empty */

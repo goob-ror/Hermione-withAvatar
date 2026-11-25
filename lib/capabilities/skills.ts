@@ -11,6 +11,7 @@ import { capabilitiesDir, loadCapabilities, ownSkillsDir, updateCapabilities } f
  * Only the names and descriptions go in Hermione's prompt; she loads a
  * skill's full instructions with `skill_use` when a task matches.
  *
+ *   builtin  capabilities/skills/<name>/ — Hermione's starter pack, shipped with her
  *   own      .hermione/capabilities/skills/<name>/
  *   linked   any folder you add as a source (e.g. ~/.claude/skills), read live
  *   plugin   skills/ inside an installed plugin
@@ -22,7 +23,7 @@ export interface Skill {
   name: string
   description: string
   dir: string
-  source: 'own' | 'linked' | 'plugin' | 'proposed'
+  source: 'builtin' | 'own' | 'linked' | 'plugin' | 'proposed'
   /** The linked folder or plugin it came from. */
   origin?: string
   enabled: boolean
@@ -31,6 +32,8 @@ export interface Skill {
 }
 
 export const proposedDir = () => path.join(capabilitiesDir(), 'proposed')
+/** The starter skills shipped in the repo. */
+export const builtinSkillsDir = () => path.join(process.cwd(), 'capabilities', 'skills')
 export const CLAUDE_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills')
 const NAME = /^[a-z0-9][a-z0-9-]{1,48}$/
 const MAX_SKILL_CHARS = 40_000
@@ -77,7 +80,13 @@ function readSkill(dir: string, source: Skill['source'], origin: string | undefi
   try {
     const { meta } = parseSkillMd(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'))
     const name = (meta.name || path.basename(dir)).trim()
-    return { name, description: (meta.description || '').trim(), dir, source, origin, enabled: source !== 'proposed' && enabled(name), files: listFiles(dir) }
+    let from = origin
+    try {
+      from = fs.readFileSync(path.join(dir, '.origin'), 'utf8').trim() || origin
+    } catch {
+      /* no recorded origin */
+    }
+    return { name, description: (meta.description || '').trim(), dir, source, origin: from, enabled: source !== 'proposed' && enabled(name), files: listFiles(dir) }
   } catch {
     return null
   }
@@ -93,7 +102,7 @@ function skillsIn(root: string, source: Skill['source'], origin: string | undefi
   return dirs.map((d) => readSkill(d, source, origin, enabled)).filter((s): s is Skill => !!s)
 }
 
-/** Every skill: own, plugin, then linked (first name wins), plus pending proposals. */
+/** Every skill: own, plugin, linked, then built-in (first name wins), plus pending proposals. */
 export function listSkills(opts: { includeProposed?: boolean } = {}): Skill[] {
   const caps = loadCapabilities()
   const enabled = (n: string) => caps.skills[n]?.enabled !== false
@@ -101,6 +110,7 @@ export function listSkills(opts: { includeProposed?: boolean } = {}): Skill[] {
     ...skillsIn(ownSkillsDir(), 'own', undefined, enabled),
     ...caps.plugins.filter((p) => p.enabled).flatMap((p) => skillsIn(path.join(p.dir, 'skills'), 'plugin', p.name, enabled)),
     ...caps.skillSources.flatMap((src) => skillsIn(src, 'linked', src, enabled)),
+    ...skillsIn(builtinSkillsDir(), 'builtin', undefined, enabled),
   ]
   const seen = new Set<string>()
   const out = found.filter((s) => (seen.has(s.name) ? false : (seen.add(s.name), true)))

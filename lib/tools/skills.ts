@@ -114,9 +114,9 @@ export const capabilitySuggest: ToolDef = {
   parameters: {
     type: 'object',
     properties: {
-      kind: { type: 'string', enum: ['plugin', 'connector'] },
+      kind: { type: 'string', enum: ['plugin', 'connector'], description: 'connector for registry: refs and MCP servers; plugin for plugin: and skill: refs' },
       title: { type: 'string', description: 'Short name, e.g. "Playwright MCP"' },
-      source: { type: 'string', description: 'plugin: Git URL / owner/repo / folder. connector: https URL or a command line like "npx @playwright/mcp@latest"' },
+      source: { type: 'string', description: 'Best: a ref from marketplace_search (registry:…, plugin:…, skill:…). Else plugin: Git URL / owner/repo / folder; connector: https URL or a command line like "npx @playwright/mcp@latest"' },
       reason: { type: 'string', description: 'What it would let you do for the operator' },
     },
     required: ['kind', 'title', 'source', 'reason'],
@@ -133,5 +133,47 @@ export const capabilitySuggest: ToolDef = {
       ].slice(0, 20)
     })
     return { ok: true, output: `Suggested the ${kind} "${title}". The operator can install or dismiss it in Capabilities; nothing was installed.` }
+  },
+}
+
+export const marketplaceSearch: ToolDef = {
+  name: 'marketplace_search',
+  description:
+    'Search the open agent marketplaces for capabilities you could use: MCP servers (official MCP Registry), plugins and skills (Claude plugin marketplaces). ' +
+    'Read-only. To get one added, call capability_suggest with the "ref" it returns — the operator installs it with one click.',
+  group: 'inspect',
+  tier: 'auto',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'What you need, e.g. "postgres", "figma", "pdf"' },
+      kind: { type: 'string', enum: ['all', 'mcp', 'plugin', 'skill'], description: 'Default all' },
+    },
+    required: ['query'],
+  },
+  async run(args) {
+    const q = String(args.query ?? '').trim()
+    const kind = String(args.kind ?? 'all')
+    const { browsePlugins, browseRegistry, browseSkills } = await import('@/lib/capabilities/install')
+    const out: string[] = []
+    if (kind === 'all' || kind === 'mcp') {
+      try {
+        const r = await browseRegistry(q)
+        out.push('MCP servers (MCP Registry):')
+        for (const s of r.servers.slice(0, 8))
+          out.push(`- ${s.title || s.name} — ${s.description.slice(0, 140)} | ref: ${s.ref}${s.installed ? ' (installed)' : s.problem ? ' (can\'t run here)' : s.plan?.inputs.some((i) => i.required) ? ' (needs a key)' : ''}`)
+      } catch (err: any) {
+        out.push(`MCP Registry unavailable: ${err?.message ?? err}`)
+      }
+    }
+    if (kind === 'all' || kind === 'plugin') {
+      out.push('', 'Plugins:')
+      for (const p of browsePlugins(q, 8)) out.push(`- ${p.name} (${p.marketplace}) — ${p.description.slice(0, 140)} | ref: ${p.ref}${p.installed ? ' (installed)' : ''}`)
+    }
+    if (kind === 'all' || kind === 'skill') {
+      out.push('', 'Skills:')
+      for (const s of browseSkills(q, 8)) out.push(`- ${s.name} (${s.marketplace}) — ${s.description.slice(0, 140)} | ref: ${s.ref}${s.installed ? ' (installed)' : ''}`)
+    }
+    return { ok: true, output: out.join('\n').trim() || 'nothing found' }
   },
 }

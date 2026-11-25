@@ -939,3 +939,18 @@
 .cap-check { display: flex; align-items: center; gap: 8px; padding: 4px 2px; min-width: 0; color: #ece6dd; font-size: 12.5px; }
 .cap-check code { color: #6f6973; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 @media (max-width: 760px) { .cap-row { flex-direction: column; } .cap-row select { max-width: none; width: 100%; } }
+
+/* Capabilities → Browse (components/CapabilitiesBrowse.tsx) */
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; margin-top: 10px; }
+.cap-card { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 10px; border: 1px solid #242127; background: #0f0e11; min-width: 0; }
+.cap-card.is-installed { border-color: #2f5a3c; }
+.cap-card .cap-desc { -webkit-line-clamp: 3; }
+.cap-card a { color: #8e8791; }
+.cap-card-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: auto; }
+.cap-installed { display: inline-flex; align-items: center; gap: 5px; color: #7fd6a0; font-size: 12px; }
+.cap-keys { display: flex; flex-direction: column; gap: 6px; }
+.cap-keys label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #cfc8c0; }
+.cap-keys em { color: #8e8791; font-style: normal; }
+.cap-keys input { padding: 6px 8px; border-radius: 6px; border: 1px solid #2e2a33; background: #131215; color: #f4eee5; font-size: 12.5px; outline: none; }
+.cap-ok { max-width: 1100px; margin: 0 auto 10px; padding: 8px 12px; border-radius: 8px; background: #142118; border: 1px solid #2f5a3c; color: #a7e0b8; font-size: 13px; }
+.mb-actions button.is-on { color: #7fd6a0; }

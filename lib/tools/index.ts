@@ -14,7 +14,7 @@ import { updatePlan } from './plan'
 import { videoInspect, videoSearch } from './video'
 import { clipRender, clipUpload } from './clip'
 import { delegate } from './delegate'
-import { capabilitiesList, capabilitySuggest, skillPropose, skillRead, skillUse } from './skills'
+import { capabilitiesList, capabilitySuggest, marketplaceSearch, skillPropose, skillRead, skillUse } from './skills'
 
 export const TOOLS: ToolDef[] = [
   fsList,
@@ -50,25 +50,35 @@ export const TOOLS: ToolDef[] = [
   skillPropose,
   capabilitiesList,
   capabilitySuggest,
+  marketplaceSearch,
 ]
 
-/** Every tool by name: the built-ins plus whatever connectors registered (see registerTool). */
-export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]))
+/**
+ * Tools added at runtime (connector / MCP tools). Process-wide: Next bundles
+ * each API route separately, so a module-level map would give the agent route
+ * and the Capabilities route different registries.
+ */
+const g = globalThis as unknown as { __hermioneDynamicTools?: Map<string, ToolDef> }
+const DYNAMIC = (g.__hermioneDynamicTools ??= new Map<string, ToolDef>())
+const BUILTIN: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]))
 
-/** Tools added at runtime (connector / MCP tools). */
-const DYNAMIC = new Map<string, ToolDef>()
+/** Every tool by name: the built-ins plus whatever connectors registered (see registerTool). */
+export const TOOL_MAP: Record<string, ToolDef> = new Proxy(BUILTIN, {
+  get: (t, name: string) => t[name] ?? DYNAMIC.get(name),
+  has: (t, name: string) => name in t || DYNAMIC.has(name),
+  ownKeys: (t) => [...Reflect.ownKeys(t), ...[...DYNAMIC.keys()].filter((k) => !(k in t))],
+  getOwnPropertyDescriptor: (t, name: string) => {
+    const value = t[name] ?? DYNAMIC.get(name)
+    return value ? { value, enumerable: true, configurable: true, writable: false } : undefined
+  },
+})
 
 export function registerTool(def: ToolDef) {
   DYNAMIC.set(def.name, def)
-  TOOL_MAP[def.name] = def
 }
 
 export function unregisterTools(pred: (def: ToolDef) => boolean) {
-  for (const [name, def] of DYNAMIC) {
-    if (!pred(def)) continue
-    DYNAMIC.delete(name)
-    delete TOOL_MAP[name]
-  }
+  for (const [name, def] of DYNAMIC) if (pred(def)) DYNAMIC.delete(name)
 }
 
 export const dynamicTools = () => [...DYNAMIC.values()]
@@ -98,7 +108,7 @@ const FORGE_TOOLS = new Set([
   'video_search', 'video_inspect',
   'clip_render', 'clip_upload',
   'delegate',
-  'skill_use', 'skill_read', 'skill_propose', 'capabilities_list', 'capability_suggest',
+  'skill_use', 'skill_read', 'skill_propose', 'capabilities_list', 'capability_suggest', 'marketplace_search',
 ])
 
 export type ToolMode = 'chat' | 'forge'

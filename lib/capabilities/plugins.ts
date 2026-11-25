@@ -33,7 +33,17 @@ export function readManifest(dir: string): { name: string; description?: string;
 const isGitUrl = (s: string) => /^(?:https?:\/\/|git@)[^\s]+$/i.test(s) || /^[\w.-]+\/[\w.-]+$/.test(s)
 
 /** Install from a local folder or a Git URL ("owner/repo" means GitHub). */
-export async function installPlugin(source: string): Promise<PluginRecord> {
+export async function installPlugin(source: string, opts: { origin?: string } = {}): Promise<PluginRecord> {
+  if (/^plugin:/.test(source.trim())) {
+    // A marketplace plugin: fetch it into a staging folder, then install that.
+    const { stageMarketPlugin } = await import('./marketplace')
+    const staged = stageMarketPlugin(source.trim())
+    try {
+      return await installPlugin(staged.dir, { origin: staged.origin })
+    } finally {
+      staged.cleanup()
+    }
+  }
   const src = source.trim()
   fs.mkdirSync(pluginsDir(), { recursive: true })
   const tmp = path.join(pluginsDir(), `.incoming-${Date.now()}`)
@@ -58,17 +68,21 @@ export async function installPlugin(source: string): Promise<PluginRecord> {
   for (let i = 2; caps.plugins.some((p) => p.id === id); i++) id = `${slug(manifest.name)}-${i}`
   const dir = path.join(pluginsDir(), id)
   fs.renameSync(tmp, dir)
-  const rec: PluginRecord = { id, name: manifest.name, description: manifest.description, version: manifest.version, dir, enabled: true, installedAt: Date.now(), origin }
+  const rec: PluginRecord = { id, name: manifest.name, description: manifest.description, version: manifest.version, dir, enabled: true, installedAt: Date.now(), origin: opts.origin ?? origin }
   updateCapabilities((d) => {
     d.plugins.push(rec)
   })
 
-  // Its MCP servers become connectors owned by the plugin.
+  // Its MCP servers become connectors owned by the plugin
+  // (.mcp.json — Claude plugins; mcp.json — Agent Plugins v1 / Hermes).
   try {
-    const j = JSON.parse(fs.readFileSync(path.join(dir, '.mcp.json'), 'utf8'))
-    for (const [name, v] of Object.entries<any>(j?.mcpServers ?? j ?? {})) {
-      const http = v?.type === 'http' || v?.type === 'sse' || (!!v?.url && !v?.command)
-      if (http && !v.url) continue
+    const mcpFile = ['.mcp.json', 'mcp.json'].map((f) => path.join(dir, f)).find((f) => fs.existsSync(f))
+    if (!mcpFile) throw new Error('no MCP servers')
+    const j = JSON.parse(fs.readFileSync(mcpFile, 'utf8'))
+    for (const [name, v] of Object.entries<any>(j?.mcpServers ?? {})) {
+      if (!v || typeof v !== 'object') continue
+      const http = v?.type === 'http' || v?.type === 'streamable-http' || v?.type === 'sse' || (!!v?.url && !v?.command)
+      if (http && (!v.url || v.type === 'sse')) continue // SSE-only servers aren't supported
       await addConnector({
         label: `${manifest.name}: ${name}`,
         transport: http ? 'http' : 'stdio',

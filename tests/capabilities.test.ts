@@ -49,7 +49,7 @@ describe('skills', () => {
     fs.writeFileSync(path.join(linked, 'bandit-vfx', 'palette.md'), '# Palette\nred, gold')
     addSkillSource(linked)
 
-    expect(listSkills().map((s) => `${s.name}:${s.source}`)).toEqual(['review-pr:own', 'bandit-vfx:linked'])
+    expect(listSkills().filter((s) => s.source !== 'builtin').map((s) => `${s.name}:${s.source}`)).toEqual(['review-pr:own', 'bandit-vfx:linked'])
     const block = skillsPromptBlock()
     expect(block).toMatch(/- review-pr: Review a pull request carefully\./)
     expect(block).not.toMatch(/Run the tests/) // instructions stay out of the prompt

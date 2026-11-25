@@ -37,9 +37,11 @@ export async function GET(req: NextRequest) {
     if (!s) return NextResponse.json({ error: `no skill ${name}` }, { status: 404 })
     return NextResponse.json({ skill: s, body: skillBody(s) })
   }
+  const { ensureDefaults } = await import('@/lib/capabilities/defaults')
+  await ensureDefaults().catch(() => {})
   const caps = loadCapabilities()
   const { connectorStatus, ensureConnectors } = await import('@/lib/capabilities/connectors')
-  void ensureConnectors()
+  void ensureConnectors().catch(() => {})
   return NextResponse.json({
     skills: listSkills({ includeProposed: true }).map((s) => ({ ...s, reason: s.source === 'proposed' ? proposalReason(s.name) : undefined })),
     skillSources: caps.skillSources,
@@ -83,6 +85,7 @@ const Body = z.discriminatedUnion('action', [
   z.object({ action: z.literal('connector.toggle'), id: Name, enabled: z.boolean() }),
   z.object({ action: z.literal('connector.remove'), id: Name }),
   z.object({ action: z.literal('connector.restart'), id: Name }),
+  z.object({ action: z.literal('connector.trust'), id: Name, trust: z.boolean() }),
   z.object({ action: z.literal('connector.claude'), names: z.array(z.string().max(80)).min(1).max(40) }),
   z.object({ action: z.literal('plugin.install'), source: z.string().trim().min(1).max(1000) }),
   z.object({ action: z.literal('plugin.toggle'), id: Name, enabled: z.boolean() }),
@@ -137,6 +140,9 @@ export async function POST(req: NextRequest) {
         break
       case 'connector.restart':
         await c.restartConnector(b.id)
+        break
+      case 'connector.trust':
+        await c.setConnectorTrust(b.id, b.trust)
         break
       case 'connector.claude':
         await c.importClaudeConnectors(b.names)

@@ -59,7 +59,7 @@ async function registerFrom(cfg: ConnectorConfig, client: any): Promise<string[]
   do {
     const page = await client.listTools(cursor ? { cursor } : undefined, { timeout: 30_000 })
     for (const t of page.tools ?? []) {
-      const readOnly = t.annotations?.readOnlyHint === true
+      const readOnly = t.annotations?.readOnlyHint === true || cfg.trustReadOnly === true
       const name = toolNameFor(cfg.id, t.name)
       const schema = t.inputSchema && typeof t.inputSchema === 'object' ? { type: 'object', properties: {}, ...t.inputSchema } : { type: 'object', properties: {} }
       const def: ToolDef = {
@@ -88,7 +88,7 @@ async function registerFrom(cfg: ConnectorConfig, client: any): Promise<string[]
 }
 
 export async function startConnector(cfg: ConnectorConfig): Promise<void> {
-  await stopConnector(cfg.id)
+  await stopConnector(cfg.id).catch(() => {})
   const live: Live = { status: 'starting', tools: [], startedAt: Date.now() }
   LIVE.set(cfg.id, live)
   try {
@@ -140,7 +140,7 @@ export async function stopConnector(id: string) {
 export function ensureConnectors(): Promise<void> {
   const pending = loadCapabilities()
     .connectors.filter((c) => c.enabled && !LIVE.has(c.id))
-    .map((c) => startConnector(c))
+    .map((c) => startConnector(c).catch(() => {}))
   if (!pending.length) return Promise.resolve()
   return Promise.all(pending).then(() => {})
 }
@@ -152,6 +152,7 @@ export function connectorStatus() {
       ...c,
       env: c.env ? Object.fromEntries(Object.keys(c.env).map((k) => [k, '••••'])) : undefined, // never send values to the page
       headers: c.headers ? Object.fromEntries(Object.keys(c.headers).map((k) => [k, '••••'])) : undefined,
+      // Enabled but not started yet (it starts on the next run or page load).
       status: (c.enabled ? (live?.status ?? 'starting') : 'off') as Status,
       error: live?.error,
       tools: live?.tools ?? [],
@@ -159,7 +160,21 @@ export function connectorStatus() {
   })
 }
 
-export async function addConnector(input: { label: string; transport: 'stdio' | 'http'; command?: string; args?: string[]; url?: string; env?: Record<string, string>; headers?: Record<string, string>; cwd?: string; source?: ConnectorConfig['source']; pluginId?: string }): Promise<ConnectorConfig> {
+export async function addConnector(input: {
+  label: string
+  transport: 'stdio' | 'http'
+  command?: string
+  args?: string[]
+  url?: string
+  env?: Record<string, string>
+  headers?: Record<string, string>
+  cwd?: string
+  source?: ConnectorConfig['source']
+  pluginId?: string
+  trustReadOnly?: boolean
+  registryName?: string
+  enabled?: boolean
+}): Promise<ConnectorConfig> {
   if (input.transport === 'stdio' && !input.command?.trim()) throw new Error('a local connector needs a command')
   if (input.transport === 'http' && !/^https?:\/\//i.test(input.url ?? '')) throw new Error('an HTTP connector needs an http(s) URL')
   const caps = loadCapabilities()
@@ -173,16 +188,30 @@ export async function addConnector(input: { label: string; transport: 'stdio' | 
     ...(input.env && Object.keys(input.env).length ? { env: input.env } : {}),
     ...(input.headers && Object.keys(input.headers).length ? { headers: input.headers } : {}),
     ...(input.cwd ? { cwd: input.cwd } : {}),
-    enabled: true,
+    enabled: input.enabled ?? true,
     source: input.source ?? 'you',
     ...(input.pluginId ? { pluginId: input.pluginId } : {}),
+    ...(input.trustReadOnly ? { trustReadOnly: true } : {}),
+    ...(input.registryName ? { registryName: input.registryName } : {}),
     addedAt: Date.now(),
   }
   updateCapabilities((d) => {
     d.connectors.push(cfg)
   })
-  void startConnector(cfg)
+  if (cfg.enabled) void startConnector(cfg)
   return cfg
+}
+
+/** Treat all of a connector's tools as read-only (or not), and reload them. */
+export async function setConnectorTrust(id: string, trustReadOnly: boolean) {
+  let cfg: ConnectorConfig | undefined
+  updateCapabilities((d) => {
+    cfg = d.connectors.find((c) => c.id === id)
+    if (!cfg) throw new Error(`no connector ${id}`)
+    if (trustReadOnly) cfg.trustReadOnly = true
+    else delete cfg.trustReadOnly
+  })
+  if (cfg!.enabled) await startConnector(cfg!)
 }
 
 export async function setConnectorEnabled(id: string, enabled: boolean) {

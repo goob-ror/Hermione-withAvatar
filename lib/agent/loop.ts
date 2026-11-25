@@ -524,7 +524,7 @@ async function decideWithoutOperator(
 export const PARALLEL_SAFE = new Set([
   'web_search', 'web_fetch', 'site_inspect', 'image_search', 'video_search', 'video_inspect',
   'fs_read', 'fs_list', 'notes_search', 'notes_read', 'get_time', 'get_calendar', 'delegate',
-  'skill_use', 'skill_read', 'capabilities_list',
+  'skill_use', 'skill_read', 'capabilities_list', 'marketplace_search',
 ])
 /** At most this many tool calls run at once. */
 export const MAX_PARALLEL = 4

@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { CapabilitiesBrowse } from '@/components/CapabilitiesBrowse'
 import { Blocks, Check, Download, Eye, FolderPlus, Lightbulb, Package, Pencil, Plug, Plus, RotateCw, Search, Sparkles, Trash2, Wrench, X } from 'lucide-react'
 
 type Policy = 'default' | 'off' | 'ask' | 'judge'
@@ -8,7 +9,7 @@ interface Skill {
   name: string
   description: string
   dir: string
-  source: 'own' | 'linked' | 'plugin' | 'proposed'
+  source: 'builtin' | 'own' | 'linked' | 'plugin' | 'proposed'
   origin?: string
   enabled: boolean
   files: string[]
@@ -36,6 +37,7 @@ interface Connector {
   status: 'off' | 'starting' | 'ready' | 'failed'
   error?: string
   tools: string[]
+  trustReadOnly?: boolean
 }
 interface Plugin {
   id: string
@@ -95,7 +97,7 @@ const POLICY_LABEL: Record<Policy, string> = { default: 'Default', off: 'Off', a
  * each tool is gated.
  */
 export function Capabilities({ refreshKey = 0 }: { refreshKey?: number }) {
-  const [tab, setTab] = useState<'skills' | 'tools' | 'connectors' | 'plugins'>('skills')
+  const [tab, setTab] = useState<'browse' | 'skills' | 'tools' | 'connectors' | 'plugins'>('skills')
   const [data, setData] = useState<Data | null>(null)
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
@@ -152,6 +154,7 @@ export function Capabilities({ refreshKey = 0 }: { refreshKey?: number }) {
       <div className="mb-tabs" role="tablist">
         {(
           [
+            ['browse', 'Browse', null],
             ['skills', 'Skills', data?.skills.filter((s) => s.source !== 'proposed').length ?? 0],
             ['tools', 'Tools', data?.tools.length ?? 0],
             ['connectors', 'Connectors', data?.connectors.length ?? 0],
@@ -159,7 +162,7 @@ export function Capabilities({ refreshKey = 0 }: { refreshKey?: number }) {
           ] as const
         ).map(([id, label, n]) => (
           <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'is-on' : ''} onClick={() => setTab(id)}>
-            {label} <span>{n}</span>
+            {label} {n !== null && <span>{n}</span>}
             {id === 'skills' && pending > 0 && <span className="cap-badge">{pending} to review</span>}
           </button>
         ))}
@@ -169,6 +172,8 @@ export function Capabilities({ refreshKey = 0 }: { refreshKey?: number }) {
       {data && data.suggestions.length > 0 && <Suggestions items={data.suggestions} act={act} />}
       {!data ? (
         <div className="mb-empty">Loading…</div>
+      ) : tab === 'browse' ? (
+        <CapabilitiesBrowse onChanged={() => void reload()} />
       ) : tab === 'skills' ? (
         <SkillsPanel data={data} query={query} act={act} />
       ) : tab === 'tools' ? (
@@ -186,7 +191,17 @@ type Act = (body: unknown) => Promise<boolean>
 const match = (q: string, ...s: (string | undefined)[]) => !q.trim() || s.some((x) => x?.toLowerCase().includes(q.trim().toLowerCase()))
 
 function Suggestions({ items, act }: { items: Suggestion[]; act: Act }) {
-  const install = (s: Suggestion) => {
+  const install = async (s: Suggestion) => {
+    // A marketplace reference installs through the marketplace endpoint.
+    if (/^(registry|plugin|skill|connector):/.test(s.source)) {
+      const r = await fetch('/api/capabilities/market', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'install', ref: s.source }) })
+      const d = await r.json().catch(() => ({}))
+      if (!r.ok) {
+        window.alert(d.error || 'Install failed')
+        return false
+      }
+      return act({ action: 'suggestion.dismiss', id: s.id })
+    }
     if (s.kind === 'plugin') return act({ action: 'plugin.install', source: s.source })
     if (/^https?:\/\//i.test(s.source)) return act({ action: 'connector.add', label: s.title, transport: 'http', url: s.source })
     const { command, args } = splitCommand(s.source)
@@ -247,7 +262,9 @@ function SkillsPanel({ data, query, act }: { data: Data; query: string; act: Act
       <div className="cap-main">
         <div className="cap-name">
           <Sparkles className="size-3.5" /> <strong>{s.name}</strong>
-          <span className={`cap-src cap-src-${s.source}`}>{s.source === 'own' ? 'Hermione' : s.source === 'linked' ? 'linked' : s.source === 'plugin' ? `plugin: ${s.origin}` : 'proposed'}</span>
+          <span className={`cap-src cap-src-${s.source}`} title={s.origin}>
+            {s.source === 'builtin' ? 'built-in' : s.source === 'own' ? (s.origin ? 'installed' : 'Hermione') : s.source === 'linked' ? 'linked' : s.source === 'plugin' ? `plugin: ${s.origin}` : 'proposed'}
+          </span>
           {s.files.length > 0 && <span className="mb-meta">{s.files.length} files</span>}
         </div>
         <p>{s.description || <em>no description</em>}</p>
@@ -493,12 +510,23 @@ function ConnectorsPanel({ data, query, act }: { data: Data; query: string; act:
               <div className="cap-name">
                 <Plug className="size-3.5" /> <strong>{c.label}</strong>
                 <span className={`cap-status is-${c.status}`}>{c.status === 'ready' ? `${c.tools.length} tools` : c.status}</span>
-                {c.source !== 'you' && <span className="cap-src">{c.source === 'plugin' ? 'plugin' : 'from Claude'}</span>}
+                {c.source !== 'you' && (
+                  <span className="cap-src">{c.source === 'plugin' ? 'plugin' : c.source === 'claude' ? 'from Claude' : c.source === 'default' ? 'default' : 'MCP Registry'}</span>
+                )}
+                {c.trustReadOnly && <span className="cap-src" title="All its tools run without approvals">read-only</span>}
               </div>
               <code className="cap-path">{c.transport === 'http' ? c.url : `${c.command} ${(c.args ?? []).join(' ')}`}</code>
               {c.error && <p className="cap-error">{c.error}</p>}
             </div>
             <div className="mb-actions">
+              <button
+                type="button"
+                className={c.trustReadOnly ? 'is-on' : ''}
+                onClick={() => void act({ action: 'connector.trust', id: c.id, trust: !c.trustReadOnly })}
+                title={c.trustReadOnly ? 'Read-only: its tools run without approvals. Click to send changes to the judge again.' : 'Treat as read-only (only for servers that just look things up)'}
+              >
+                RO
+              </button>
               <button type="button" onClick={() => void act({ action: 'connector.restart', id: c.id })} title="Restart" disabled={!c.enabled}>
                 <RotateCw className="size-3.5" />
               </button>
