@@ -10,6 +10,7 @@ import { ParticleNetwork } from './ParticleNetwork'
 import { ForgeIcon, type AppMode } from './ModeSwitcher'
 import { TrendRecommendations } from './TrendRecommendations'
 import { useEffect, useRef, useState } from 'react'
+import { useFolderMention } from '@/components/FolderMention'
 import { greet } from '@/lib/voice/speaker'
 import { RecentSessions, type RecentSession } from './RecentSessions'
 
@@ -49,6 +50,13 @@ export function WelcomeScreen({
   onOpenSession,
 }: WelcomeScreenProps) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  /** The box is uncontrolled; this mirrors its text for the "@folder" menu. */
+  const [text, setText] = useState('')
+  const setBox = (v: string) => {
+    setText(v)
+    if (inputRef.current) inputRef.current.value = v
+  }
+  const folderMention = useFolderMention(text, setBox, inputRef)
   const spokenRef = useRef(false)
   const forge = mode === 'forge'
   const [platforms, setPlatforms] = useState<string[]>(['YouTube Shorts'])
@@ -88,6 +96,7 @@ export function WelcomeScreen({
     if (!val || disabled) return
     onSubmit(compose(val))
     if (inputRef.current) inputRef.current.value = ''
+    setText('')
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -160,13 +169,18 @@ export function WelcomeScreen({
 
       {/* Centered input */}
       <div className="welcome-input-container">
+        {folderMention.menu}
         <textarea
           ref={inputRef}
           placeholder={forge ? 'What topic should we dig into? e.g. AI tools for students' : 'What are we working on?'}
           className="welcome-input"
           rows={1}
           disabled={disabled}
-          onKeyDown={handleKeyDown}
+          onKeyDown={(e) => {
+            if (folderMention.onKeyDown(e)) return
+            handleKeyDown(e)
+          }}
+          onChange={(e) => setText(e.target.value)}
           onInput={(e) => {
             e.currentTarget.style.height = 'auto'
             e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`

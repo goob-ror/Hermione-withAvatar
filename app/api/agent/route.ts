@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { abandonPending, runAgent, systemPromptFor } from '@/lib/agent/loop'
 import { ensureSession, getSession, parseMode } from '@/lib/agent/session'
 import { agentStream } from '@/lib/agent/stream'
+import { defaultRoot, parseFolderMention, rememberWorkspace, withWorkspace } from '@/lib/agent/workspace'
 import {
   activeProviderId,
+  configDir,
   getProvider,
   publicProviders,
   resolvedKey,
@@ -83,11 +85,19 @@ export async function POST(req: NextRequest) {
   }
   // A session's mode is fixed when it is created; later requests can't flip it.
   const mode = getSession(sessionId)?.mode ?? parseMode(body.mode)
-  const prompt = await systemPromptFor(model, resolvedProvider, mode)
-  const session = ensureSession(sessionId, model, prompt, resolvedProvider, mode)
+  const session = ensureSession(sessionId, model, '', resolvedProvider, mode)
 
-  // Keep the system prompt in sync when the operator switches models or
-  // providers mid-session (native tools vs text protocol differ per model).
+  // "@<folder>" in the operator's own message: this session now works in that folder.
+  const mention = body.retry ? { folder: undefined, problems: [] as string[] } : parseFolderMention(message, configDir())
+  const switched = !!mention.folder && mention.folder !== session.workspace
+  if (mention.folder) {
+    session.workspace = mention.folder
+    rememberWorkspace(configDir(), mention.folder)
+  }
+
+  // Keep the system prompt in sync when the operator switches models,
+  // providers or folders mid-session (native tools vs text protocol differ per model).
+  const prompt = await withWorkspace(session.workspace, () => systemPromptFor(model, resolvedProvider, mode))
   if (session.messages[0]?.role === 'system' && session.messages[0].content !== prompt) {
     session.messages[0] = { role: 'system', content: prompt }
   }
@@ -100,11 +110,16 @@ export async function POST(req: NextRequest) {
   } else {
     // An open permission card or question is answered by this message instead.
     abandonPending(session)
-    session.messages.push({ role: 'user', content: message })
+    // Tell the model what the app did with an @ mention (it can't see the app).
+    const notes = [
+      ...(switched ? [`[The app switched this session's project folder to ${session.workspace}.]`] : []),
+      ...mention.problems.map((p) => `[The app could not use an @ folder: ${p}.]`),
+    ]
+    session.messages.push({ role: 'user', content: notes.length ? `${message}\n\n${notes.join('\n')}` : message })
   }
 
-  return agentStream(
-    (emit, signal) => runAgent(session, { thinkingEffort, providerId: resolvedProvider, signal }, emit),
-    req.signal,
-  )
+  return agentStream((emit, signal) => {
+    emit({ type: 'workspace', path: session.workspace ?? null, defaultRoot: defaultRoot(), problems: mention.problems })
+    return runAgent(session, { thinkingEffort, providerId: resolvedProvider, signal }, emit)
+  }, req.signal)
 }

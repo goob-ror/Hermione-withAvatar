@@ -1,5 +1,6 @@
 import path from 'path'
 import { grantedFolders, isInsideGrantedFolder } from '@/lib/permissions/store'
+import { currentWorkspace, defaultRoot } from './workspace'
 
 /**
  * Root lock: every filesystem tool resolves its path through here and is
@@ -12,8 +13,8 @@ import { grantedFolders, isInsideGrantedFolder } from '@/lib/permissions/store'
  * can never be reached by a relative traversal out of the root.
  */
 export function agentRoot(): string {
-  // turbopackIgnore: the agent root is runtime state, never a build input.
-  return path.resolve(/* turbopackIgnore: true */ process.env.AGENT_ROOT || process.cwd())
+  // A session that picked a folder with @ works there (lib/agent/workspace.ts).
+  return currentWorkspace() ?? defaultRoot()
 }
 
 /** Resolve strictly inside the root. Throws on escape. */

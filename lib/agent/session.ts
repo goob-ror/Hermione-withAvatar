@@ -28,6 +28,8 @@ export interface Session {
   mode: SessionMode
   messages: ChatMessage[]
   pending?: PendingApproval
+  /** Project folder chosen with @ (lib/agent/workspace.ts); undefined = Hermione's own folder. */
+  workspace?: string
   updatedAt: number
   createdAt: number
 }
@@ -158,6 +160,7 @@ function sessionFromStored(stored: SessionData): Session {
     providerId: stored.providerId,
     mode: parseMode(stored.mode),
     messages,
+    ...(stored.workspace ? { workspace: stored.workspace } : {}),
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
   }
@@ -197,6 +200,7 @@ function sessionToStored(session: Session): SessionData {
     id: session.id,
     createdAt: session.createdAt || now,
     updatedAt: session.updatedAt,
+    ...(session.workspace ? { workspace: session.workspace } : {}),
     title: firstUserMessage || (session.mode === 'forge' ? 'New forge project' : 'New conversation'),
     messages,
     providerId: session.providerId,

@@ -76,6 +76,8 @@ export type AgentEvent =
   | { type: 'token'; delta: string }
   | { type: 'tool_call'; callId: string; tool: string; args: Record<string, any>; tier: ToolTier; group: ToolGroup }
   | { type: 'tool_result'; callId: string; tool: string; ok: boolean; output: string }
+  /** The session's project folder (chosen with @); null = Hermione's own folder. */
+  | { type: 'workspace'; path: string | null; defaultRoot: string; problems: string[] }
   /** An approval-gated call decided without the operator (Auto judge, permissions Off, or a hard limit). */
   | { type: 'auto_decision'; callId: string; tool: string; decision: 'allowed' | 'blocked'; by: 'judge' | 'off' | 'hard-limit'; reason: string }
   | { type: 'approval_required'; callId: string; tool: string; args: Record<string, any>; reason: string; group: ToolGroup }

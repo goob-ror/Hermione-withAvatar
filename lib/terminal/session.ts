@@ -10,7 +10,8 @@
 // stays clean and parseable.
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { agentRoot } from '@/lib/agent/paths'
+import { getSession } from '@/lib/agent/session'
+import { defaultRoot } from '@/lib/agent/workspace'
 
 const RING_LIMIT = 200_000
 const DEFAULT_TIMEOUT_MS = 120_000
@@ -28,6 +29,8 @@ export interface TerminalChunk {
 }
 
 interface SharedTerminal {
+  /** The folder the shell was last put in (the session's @ workspace, or Hermione's own folder). */
+  cwd?: string
   id: string
   proc: ChildProcessWithoutNullStreams | null
   shell: string
@@ -43,6 +46,20 @@ interface SharedTerminal {
 
 const TERMINALS = new Map<string, SharedTerminal>()
 const TTL_MS = 6 * 60 * 60 * 1000
+
+/** Where this session's terminal should be: its @ workspace, else Hermione's own folder. */
+function wantedCwd(t: SharedTerminal): string {
+  return getSession(t.id)?.workspace ?? defaultRoot()
+}
+
+/** Put the shell in the session's folder if it moved (the operator picked another @ folder). */
+function followWorkspace(t: SharedTerminal) {
+  const want = wantedCwd(t)
+  if (!t.proc || t.cwd === want) return
+  t.proc.stdin.write(`cd "${want.replace(/\\/g, '/').replace(/"/g, '\\"')}"\n`)
+  t.cwd = want
+  sysText(t, `[now in ${want}]\n`)
+}
 
 function shellFor(): string {
   if (process.platform === 'win32') {
@@ -108,8 +125,10 @@ function spawnShell(t: SharedTerminal) {
   const shell = shellFor()
   t.shell = shell
 
+  const cwd = wantedCwd(t)
+  t.cwd = cwd
   const proc = spawn(/*turbopackIgnore: true*/ shell, [], {
-    cwd: agentRoot(),
+    cwd,
     env: {
       ...process.env,
       PS1: '',
@@ -144,7 +163,7 @@ function spawnShell(t: SharedTerminal) {
   })
 
   t.proc = proc
-  sysText(t, `[terminal ready · ${shell} · ${agentRoot()}]\n`)
+  sysText(t, `[terminal ready · ${shell} · ${cwd}]\n`)
 }
 
 export function getTerminal(sessionId: string): SharedTerminal {
@@ -187,6 +206,7 @@ export function subscribe(sessionId: string, fn: (chunk: TerminalChunk) => void)
 export function writeInput(sessionId: string, data: string): { ok: boolean; output: string } {
   const t = getTerminal(sessionId)
   if (!t.proc) return { ok: false, output: 'shell is not running' }
+  followWorkspace(t)
   t.busy = true
   t.proc.stdin.write(data.endsWith('\n') ? data : `${data}\n`)
   return { ok: true, output: '' }
@@ -246,6 +266,7 @@ export async function runInTerminal(
   if (!cmd) return { ok: false, output: 'empty command' }
   if (!t.proc) spawnShell(t)
   if (t.active) return { ok: false, output: 'the terminal is already running a command — interrupt it first' }
+  followWorkspace(t)
 
   const timeout = Math.min(MAX_TIMEOUT_MS, Math.max(1000, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS))
   const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`

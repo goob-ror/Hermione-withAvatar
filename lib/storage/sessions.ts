@@ -35,6 +35,8 @@ export interface SessionData {
   mode?: 'chat' | 'forge'
   /** Model the session last ran on. */
   model?: string
+  /** Project folder chosen with @ (absolute path). */
+  workspace?: string
   /**
    * The model-facing history (assistant tool calls + tool results), minus the
    * system prompt — so a resumed session keeps its working context. Long tool

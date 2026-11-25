@@ -27,6 +27,8 @@ import {
   VolumeX,
   Zap,
   Lightbulb,
+  FolderOpen,
+  X,
 } from 'lucide-react'
 import { useRunVoice } from '@/lib/voice/useRunVoice'
 import { MemoryBank } from '@/components/MemoryBank'
@@ -67,6 +69,7 @@ import { ParticleNetwork } from '@/components/ParticleNetwork'
 import { ReplyFeedback } from '@/components/ReplyFeedback'
 import { HelperModels } from '@/components/HelperModels'
 import { PermissionMode } from '@/components/PermissionMode'
+import { useFolderMention } from '@/components/FolderMention'
 import { StartupConfigModal, type StartupConfig } from '@/components/StartupConfigModal'
 import {
   FolderModal,
@@ -403,6 +406,21 @@ export default function Page() {
   /** Cancels the running request when the operator presses Stop. */
   const abortRef = useRef<AbortController | null>(null)
   const composerRef = useRef<HTMLTextAreaElement | null>(null)
+  /** "@folder" menu in the composer. */
+  const folderMention = useFolderMention(input, setInput, composerRef)
+  /** The project folder this session works in (chosen with @); null = Hermione's own. */
+  const [workspace, setWorkspace] = useState<{ path: string | null; defaultRoot: string } | null>(null)
+  useEffect(() => {
+    fetch(`/api/workspace?sessionId=${encodeURIComponent(sessionId)}`)
+      .then((r) => r.json())
+      .then((d) => setWorkspace({ path: d.workspace ?? null, defaultRoot: d.defaultRoot }))
+      .catch(() => {})
+  }, [sessionId])
+  const resetWorkspace = () =>
+    fetch('/api/workspace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId, path: null }) })
+      .then((r) => r.json())
+      .then((d) => setWorkspace({ path: d.workspace ?? null, defaultRoot: d.defaultRoot }))
+      .catch(() => {})
   /** Thumbs up/down per reply, kept in this browser (key: session:index). */
   const [ratings, setRatings] = useState<Record<string, Rating>>({})
   useEffect(() => {
@@ -1039,6 +1057,12 @@ export default function Page() {
         })
         .catch(() => null)
       setCompanionState('alert')
+      return
+    }
+
+    // The session's project folder (picked with @).
+    if (event.type === 'workspace') {
+      setWorkspace({ path: event.path ?? null, defaultRoot: event.defaultRoot })
       return
     }
 
@@ -1902,12 +1926,26 @@ export default function Page() {
                 <ArrowDown className="size-3.5" /> Jump to latest
               </button>
             )}
+            {folderMention.menu}
+            {workspace?.path && (
+              <div className="workspace-chip" title={workspace.path}>
+                <FolderOpen className="size-3.5 flex-none" />
+                <span>
+                  Working in <strong>{workspace.path.split(/[\\/]/).filter(Boolean).pop()}</strong>
+                </span>
+                <span className="path">{workspace.path}</span>
+                <button type="button" onClick={() => void resetWorkspace()} title="Go back to Hermione's own folder">
+                  <X className="size-3" />
+                </button>
+              </div>
+            )}
             <div className="composer">
               <textarea
                 ref={composerRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
+                  if (folderMention.onKeyDown(e)) return
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                     e.preventDefault()
                     handleSendMessage()
