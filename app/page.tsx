@@ -70,6 +70,7 @@ import { ReplyFeedback } from '@/components/ReplyFeedback'
 import { HelperModels } from '@/components/HelperModels'
 import { PermissionMode } from '@/components/PermissionMode'
 import { useFolderMention } from '@/components/FolderMention'
+import { Capabilities } from '@/components/Capabilities'
 import { StartupConfigModal, type StartupConfig } from '@/components/StartupConfigModal'
 import {
   FolderModal,
@@ -340,6 +341,8 @@ export default function Page() {
   const [appMode, setAppMode] = useState<AppMode>('chat')
   /** The Memory Bank page is open over the workspace (the chat stays mounted underneath). */
   const [memoryOpen, setMemoryOpen] = useState(false)
+  /** The Capabilities page is open over the workspace. */
+  const [capsOpen, setCapsOpen] = useState(false)
   /** Bumped when Hermione saves a memory, so an open Memory Bank reloads. */
   const [memoryVersion, setMemoryVersion] = useState(0)
   /** Clip setup window (FFmpeg / voice status, free Pexels + Groq keys). */
@@ -1610,7 +1613,15 @@ export default function Page() {
             }}
             disabled={isStreaming}
             memoryOpen={memoryOpen}
-            onMemory={() => setMemoryOpen(true)}
+            onMemory={() => {
+              setCapsOpen(false)
+              setMemoryOpen(true)
+            }}
+            capsOpen={capsOpen}
+            onCapabilities={() => {
+              setMemoryOpen(false)
+              setCapsOpen(true)
+            }}
           />
         </div>
         <div className="brand">
@@ -1673,9 +1684,10 @@ export default function Page() {
       </header>
 
       {memoryOpen && <MemoryBank refreshKey={memoryVersion} />}
+      {capsOpen && <Capabilities />}
 
       {/* Main Workspace Layout — hidden, not unmounted, while the Memory Bank is open */}
-      <div style={{ display: memoryOpen ? 'none' : 'contents' }}>
+      <div style={{ display: memoryOpen || capsOpen ? 'none' : 'contents' }}>
       {showWelcome && messages.length === 0 ? (
         <WelcomeScreen
           key={appMode}

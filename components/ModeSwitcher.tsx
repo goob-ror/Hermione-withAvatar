@@ -1,7 +1,7 @@
 'use client'
 
 import type { SVGProps } from 'react'
-import { Brain } from 'lucide-react'
+import { Brain, Blocks } from 'lucide-react'
 
 export type AppMode = 'chat' | 'forge'
 
@@ -73,12 +73,16 @@ export function ModeSwitcher({
   disabled,
   memoryOpen = false,
   onMemory,
+  capsOpen = false,
+  onCapabilities,
 }: {
   mode: AppMode
   onChange: (mode: AppMode) => void
   disabled?: boolean
   memoryOpen?: boolean
   onMemory?: () => void
+  capsOpen?: boolean
+  onCapabilities?: () => void
 }) {
   return (
     <div
@@ -87,7 +91,7 @@ export function ModeSwitcher({
       className="flex items-center gap-0.5 p-0.5 rounded-lg bg-[#131214] border border-[#29272b]"
     >
       {MODES.map(({ id, label, hint, Icon }) => {
-        const active = mode === id && !memoryOpen
+        const active = mode === id && !memoryOpen && !capsOpen
         const accent = id === 'forge' ? 'text-[#f0956f]' : 'text-[#d2b278]'
         return (
           <button
@@ -122,6 +126,22 @@ export function ModeSwitcher({
         >
           <Brain className={`size-3.5 ${memoryOpen ? 'text-[#b291e8]' : ''}`} />
           <span className="whitespace-nowrap max-lg:sr-only">Memory Bank</span>
+        </button>
+      )}
+      {onCapabilities && (
+        <button
+          role="tab"
+          aria-selected={capsOpen}
+          title="Skills, connectors and plugins Hermione can use, and how each tool is gated"
+          onClick={() => !capsOpen && onCapabilities()}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-colors ${
+            capsOpen
+              ? 'bg-[#232126] text-white shadow-[inset_0_0_0_1px_#35323a]'
+              : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#1b1a1d]'
+          }`}
+        >
+          <Blocks className={`size-3.5 ${capsOpen ? 'text-[#7fd6a0]' : ''}`} />
+          <span className="whitespace-nowrap max-lg:sr-only">Capabilities</span>
         </button>
       )}
     </div>

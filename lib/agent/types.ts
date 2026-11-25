@@ -35,6 +35,12 @@ export interface ToolDef {
    * operator's approval (e.g. page_act: reads run freely, clicks/typing ask).
    */
   needsApproval?(args: Record<string, any>): boolean
+  /** Where it comes from (built-in, or a connector's MCP server). */
+  source?: 'builtin' | 'connector'
+  /** Policy when the operator hasn't set one (connector tools that change things: 'judge'). */
+  defaultPolicy?: 'default' | 'off' | 'ask' | 'judge'
+  /** Shown in Capabilities: the connector this tool belongs to. */
+  connectorId?: string
   run(args: Record<string, any>, ctx: ToolContext): Promise<ToolResult>
 }
 

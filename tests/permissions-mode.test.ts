@@ -14,6 +14,7 @@ process.env.AGENT_ROOT = root
 import { hardLimit } from '@/lib/agent/hardLimits'
 import { judgeAction } from '@/lib/agent/judge'
 import { permissionMode, recentAudit, setPermissionMode } from '@/lib/permissions/mode'
+import { setToolPolicy } from '@/lib/capabilities/store'
 
 describe('hard limits', () => {
   it.each([
@@ -182,6 +183,26 @@ describe('permission modes (integration)', () => {
     setPermissionMode('auto')
     queue = [write, { content: '{"decision":"allow","reason":"The operator asked to write this file."}' }, { content: 'Written.' }]
     const events = await run('write hello to out.txt')
+    expect(events.find((e) => e.type === 'auto_decision')).toMatchObject({ decision: 'allowed', by: 'judge' })
+    expect(fs.readFileSync(path.join(root, 'out.txt'), 'utf8')).toBe('hello')
+  })
+
+  it('Capabilities "Always ask" wins even when permissions are off — even for a read-only tool', async () => {
+    setPermissionMode('off')
+    setToolPolicy('get_time', 'ask')
+    queue = [{ toolCall: { name: 'get_time', args: '{}' } }]
+    const events = await run('what time is it')
+    setToolPolicy('get_time', 'default')
+    expect(events.find((e) => e.type === 'approval_required')?.reason).toMatch(/always asks: your Capabilities setting/)
+  })
+
+  it('Capabilities "Judge decides" uses the judge even in Ask mode (no card when it allows)', async () => {
+    setPermissionMode('ask')
+    setToolPolicy('fs_write', 'judge')
+    queue = [write, { content: '{"decision":"allow","reason":"Clearly requested."}' }, { content: 'Written.' }]
+    const events = await run('write hello to out.txt')
+    setToolPolicy('fs_write', 'default')
+    expect(events.some((e) => e.type === 'approval_required')).toBe(false)
     expect(events.find((e) => e.type === 'auto_decision')).toMatchObject({ decision: 'allowed', by: 'judge' })
     expect(fs.readFileSync(path.join(root, 'out.txt'), 'utf8')).toBe('hello')
   })

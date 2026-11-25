@@ -1,4 +1,4 @@
-import { TOOL_MAP, isKnownTool, isToolAllowed, toolSchemas, textToolProtocol } from '@/lib/tools'
+import { TOOL_MAP, effectivePolicy, isKnownTool, isToolAllowed, toolSchemas, textToolProtocol } from '@/lib/tools'
 import { agentRoot } from './paths'
 import { touch, persistSession, type Session, type SessionMode } from './session'
 import { activeProviderId, getProvider, resolvedKey, type Provider } from './providers'
@@ -17,6 +17,7 @@ import { currentWorkspace, withWorkspace } from './workspace'
 import { judgeAction } from './judge'
 import { audit, permissionMode } from '@/lib/permissions/mode'
 import { lessonsPromptBlock } from '@/lib/feedback/store'
+import { skillsPromptBlock } from '@/lib/capabilities/skills'
 import { answerText, IGNORED_TEXT, parseQuestion, SKIPPED_TEXT, type QuestionAnswer } from '@/lib/tools/ask'
 
 /** Tag on the error text so the UI knows to refresh its model list. */
@@ -158,7 +159,9 @@ export function buildSystemPrompt(opts: { nativeTools: boolean; mode?: SessionMo
   ].join('\n')
 
   const lessons = opts.memory === false ? '' : lessonsPromptBlock()
-  const withMemory = opts.memory === false ? base : `${base}\n\n${memoryPromptBlock()}${lessons ? `\n\n${lessons}` : ''}`
+  const skills = skillsPromptBlock()
+  const withMemory =
+    (opts.memory === false ? base : `${base}\n\n${memoryPromptBlock()}${lessons ? `\n\n${lessons}` : ''}`) + (skills ? `\n\n${skills}` : '')
   const withMode = opts.mode === 'forge' ? `${withMemory}\n\n${FORGE_PROMPT}` : withMemory
   return opts.nativeTools ? withMode : `${withMode}\n\n${textToolProtocol(opts.mode)}`
 }
@@ -475,8 +478,15 @@ export function toolArgs(def: ToolDef, args: Record<string, any> | undefined): R
  * 'allowed' (run it), 'blocked' (hard limit), or why the operator must be asked
  * ('' in Ask mode). Every decision taken without the operator is audited.
  */
-async function decideWithoutOperator(session: Session, call: ToolCall, emit: Emit): Promise<'allowed' | 'blocked' | string> {
-  const mode = permissionMode()
+async function decideWithoutOperator(
+  session: Session,
+  call: ToolCall,
+  emit: Emit,
+  policy: 'default' | 'off' | 'ask' | 'judge' = 'default',
+): Promise<'allowed' | 'blocked' | string> {
+  // A "judge" tool is judged even in Ask mode; an "ask" tool always asks.
+  const permission = permissionMode()
+  const mode = policy === 'judge' && permission === 'ask' ? 'auto' : permission
   const args = JSON.stringify(call.args ?? {})
   const limit = hardLimit(call.tool, call.args ?? {})
   if (limit?.level === 'block') {
@@ -484,6 +494,7 @@ async function decideWithoutOperator(session: Session, call: ToolCall, emit: Emi
     emit({ type: 'auto_decision', callId: call.callId, tool: call.tool, decision: 'blocked', by: 'hard-limit', reason: limit.reason })
     return 'blocked'
   }
+  if (policy === 'ask') return 'always asks: your Capabilities setting for this tool'
   if (mode === 'ask') return ''
   if (limit) {
     audit({ sessionId: session.id, tool: call.tool, args, mode, decision: 'asked', by: 'hard-limit', reason: limit.reason })
@@ -513,6 +524,7 @@ async function decideWithoutOperator(session: Session, call: ToolCall, emit: Emi
 export const PARALLEL_SAFE = new Set([
   'web_search', 'web_fetch', 'site_inspect', 'image_search', 'video_search', 'video_inspect',
   'fs_read', 'fs_list', 'notes_search', 'notes_read', 'get_time', 'get_calendar', 'delegate',
+  'skill_use', 'skill_read', 'capabilities_list',
 ])
 /** At most this many tool calls run at once. */
 export const MAX_PARALLEL = 4
@@ -534,7 +546,15 @@ export async function inBatches<T>(fns: (() => Promise<T>)[], limit = MAX_PARALL
 /** A call that can join a parallel batch: known, allowed here, read-only, valid input. */
 function parallelOk(session: Session, call: ToolCall): boolean {
   const def = TOOL_MAP[call.tool]
-  return !!def && PARALLEL_SAFE.has(call.tool) && def.tier === 'auto' && !def.needsApproval && isToolAllowed(call.tool, session.mode) && !inputProblem(def, call)
+  return (
+    !!def &&
+    (PARALLEL_SAFE.has(call.tool) || (def.source === 'connector' && def.tier === 'auto')) &&
+    def.tier === 'auto' &&
+    !def.needsApproval &&
+    effectivePolicy(call.tool) === 'default' &&
+    isToolAllowed(call.tool, session.mode) &&
+    !inputProblem(def, call)
+  )
 }
 
 /**
@@ -588,8 +608,11 @@ async function executeQueue(
     }
 
     const def = TOOL_MAP[call.tool]
-    // A tool may decide per call (page_act: reading is free, clicking asks).
-    const tier = !def ? 'auto' : def.needsApproval ? (def.needsApproval(call.args) ? 'confirm' : 'auto') : def.tier
+    // A tool may decide per call (page_act: reading is free, clicking asks);
+    // your Capabilities setting can force "always ask" or "judge" on any tool.
+    const policy = def ? effectivePolicy(call.tool) : 'default'
+    const ownTier = !def ? 'auto' : def.needsApproval ? (def.needsApproval(call.args) ? 'confirm' : 'auto') : def.tier
+    const tier = policy === 'ask' || policy === 'judge' ? 'confirm' : ownTier
     const group = def?.group ?? 'shell'
 
     emit({
@@ -627,7 +650,7 @@ async function executeQueue(
 
     // Don't ask the operator to approve a call that can't run anyway.
     if (def && tier === 'confirm' && !inputProblem(def, call)) {
-      const decided = await decideWithoutOperator(session, call, emit)
+      const decided = await decideWithoutOperator(session, call, emit, policy)
       if (decided === 'blocked') {
         const output = `${call.tool} was NOT run: it is blocked by a hard limit and can't be approved. Tell the operator what you wanted to do and why, and suggest a safer way.`
         emit({ type: 'tool_result', callId: call.callId, tool: call.tool, ok: false, output })
@@ -874,6 +897,8 @@ function noteStopped(session: Session, emit: Emit) {
 export async function runAgent(session: Session, opts: RunOptions, emit: Emit): Promise<void> {
   // Everything this run does (tools, prompt, judge) treats the session's @ folder as the root.
   if (currentWorkspace() !== session.workspace) return withWorkspace(session.workspace, () => runAgent(session, opts, emit))
+  // Connector tools must be registered before the model sees the tool list (wait ≤ 8 s).
+  await Promise.race([import('@/lib/capabilities/connectors').then((c) => c.ensureConnectors()).catch(() => {}), new Promise((r) => setTimeout(r, 8_000))])
   try {
     await loopRounds(session, opts, emit)
     persistSession(session)

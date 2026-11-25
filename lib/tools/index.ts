@@ -1,4 +1,5 @@
 import type { ToolDef } from '@/lib/agent/types'
+import { toolPolicy, type ToolPolicy } from '@/lib/capabilities/store'
 import { fsDelete, fsList, fsRead, fsWrite } from './fs'
 import { shellRun, SHELL_ALLOWLIST } from './shell'
 import { siteInspect, webFetch, allowedDomains } from './web'
@@ -13,6 +14,7 @@ import { updatePlan } from './plan'
 import { videoInspect, videoSearch } from './video'
 import { clipRender, clipUpload } from './clip'
 import { delegate } from './delegate'
+import { capabilitiesList, capabilitySuggest, skillPropose, skillRead, skillUse } from './skills'
 
 export const TOOLS: ToolDef[] = [
   fsList,
@@ -43,9 +45,38 @@ export const TOOLS: ToolDef[] = [
   clipRender,
   clipUpload,
   delegate,
+  skillUse,
+  skillRead,
+  skillPropose,
+  capabilitiesList,
+  capabilitySuggest,
 ]
 
+/** Every tool by name: the built-ins plus whatever connectors registered (see registerTool). */
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]))
+
+/** Tools added at runtime (connector / MCP tools). */
+const DYNAMIC = new Map<string, ToolDef>()
+
+export function registerTool(def: ToolDef) {
+  DYNAMIC.set(def.name, def)
+  TOOL_MAP[def.name] = def
+}
+
+export function unregisterTools(pred: (def: ToolDef) => boolean) {
+  for (const [name, def] of DYNAMIC) {
+    if (!pred(def)) continue
+    DYNAMIC.delete(name)
+    delete TOOL_MAP[name]
+  }
+}
+
+export const dynamicTools = () => [...DYNAMIC.values()]
+
+/** The policy in force for a tool: yours if set, else the tool's own default. */
+export function effectivePolicy(name: string): ToolPolicy {
+  return toolPolicy(name, TOOL_MAP[name]?.defaultPolicy ?? 'default')
+}
 
 export function isKnownTool(name: string): boolean {
   return Object.prototype.hasOwnProperty.call(TOOL_MAP, name)
@@ -67,16 +98,19 @@ const FORGE_TOOLS = new Set([
   'video_search', 'video_inspect',
   'clip_render', 'clip_upload',
   'delegate',
+  'skill_use', 'skill_read', 'skill_propose', 'capabilities_list', 'capability_suggest',
 ])
 
 export type ToolMode = 'chat' | 'forge'
 
 export function toolsFor(mode: ToolMode = 'chat'): ToolDef[] {
-  return mode === 'forge' ? TOOLS.filter((t) => FORGE_TOOLS.has(t.name)) : TOOLS
+  const builtIn = mode === 'forge' ? TOOLS.filter((t) => FORGE_TOOLS.has(t.name)) : TOOLS
+  return [...builtIn, ...DYNAMIC.values()].filter((t) => effectivePolicy(t.name) !== 'off')
 }
 
 export function isToolAllowed(name: string, mode: ToolMode = 'chat'): boolean {
-  return mode !== 'forge' || FORGE_TOOLS.has(name)
+  if (effectivePolicy(name) === 'off') return false
+  return mode !== 'forge' || FORGE_TOOLS.has(name) || DYNAMIC.has(name)
 }
 
 /** Ollama / OpenAI `tools` payload for the given mode. */

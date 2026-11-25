@@ -892,3 +892,50 @@
 .workspace-chip .path { color: #6f6973; font: 11px ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
 .workspace-chip button { color: #8e8791; padding: 2px; border-radius: 4px; }
 .workspace-chip button:hover { color: #f4eee5; background: #2a2418; }
+
+/* Capabilities page (components/Capabilities.tsx) */
+.cap-badge { margin-left: 6px !important; background: #2a2418 !important; color: #f0d9a8 !important; }
+.cap-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+.cap-inline { display: flex; gap: 6px; flex: 1 1 320px; }
+.cap-inline input, .cap-editor input, .cap-editor select, .cap-editor textarea, .cap-row select { padding: 7px 10px; border-radius: 8px; border: 1px solid #2e2a33; background: #131215; color: #f4eee5; font-size: 13px; outline: none; }
+.cap-inline input { flex: 1; min-width: 0; }
+.cap-inline button { display: inline-flex; align-items: center; gap: 5px; padding: 7px 10px; border-radius: 8px; border: 1px solid #2e2a33; color: #cfc8c0; font-size: 12.5px; }
+.cap-editor { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; padding: 12px; border-radius: 10px; border: 1px solid #2e2a33; background: #0f0e11; }
+.cap-editor textarea { min-height: 220px; resize: vertical; font: 13px/1.55 ui-monospace, Consolas, monospace; }
+.cap-connector-form { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.cap-connector-form input:first-child { flex: 0 1 160px; }
+.cap-connector-form input:nth-of-type(2) { flex: 1 1 260px; }
+.cap-row { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 11px 4px; border-bottom: 1px solid #1f1d22; }
+.cap-row.is-off { opacity: 0.55; }
+.cap-row.is-proposed { background: linear-gradient(90deg, rgba(197, 168, 113, 0.08), transparent 70%); }
+.cap-main { min-width: 0; flex: 1; }
+.cap-main p { color: #cfc8c0; font-size: 13px; line-height: 1.45; margin-top: 3px; }
+.cap-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: #c5a871; }
+.cap-name strong, .cap-name code { color: #f4eee5; font-size: 13.5px; }
+.cap-desc { color: #8e8791 !important; font-size: 12px !important; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.cap-src, .cap-status { padding: 1px 7px; border-radius: 999px; border: 1px solid #3a3640; color: #b8b2bc; font-size: 10.5px; }
+.cap-src-own { color: #e7c78d; border-color: #5a4a2c; }
+.cap-src-proposed { color: #f0d9a8; border-color: #8a744b; }
+.cap-status.is-ready { color: #7fd6a0; border-color: #2f5a3c; }
+.cap-status.is-starting { color: #9cc3d9; border-color: #2f4757; }
+.cap-status.is-failed { color: #f0b4b4; border-color: #5a2a2a; }
+.cap-error { color: #f0b4b4 !important; font-size: 12px !important; }
+.cap-path { display: block; color: #6f6973; font: 11.5px ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 3px; }
+.cap-body { margin-top: 8px; max-height: 360px; overflow: auto; padding: 10px; border-radius: 8px; background: #0b0a0c; border: 1px solid #242127; color: #ddd6cd; font: 12px/1.55 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+.cap-row select { font-size: 11.5px; padding: 5px 8px; max-width: 220px; flex: none; }
+.cap-intro { margin: 6px 0 4px; line-height: 1.5; }
+.cap-toggle { position: relative; width: 32px; height: 18px; border-radius: 999px; background: #2e2a33; flex: none; transition: background 0.15s; }
+.cap-toggle span { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #8e8791; transition: transform 0.15s, background 0.15s; }
+.cap-toggle.is-on { background: #2f5a3c; }
+.cap-toggle.is-on span { transform: translateX(14px); background: #7fd6a0; }
+.cap-suggestions { display: flex; flex-direction: column; gap: 6px; max-width: 1100px; margin: 0 auto 10px; }
+.cap-suggestion { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 1px dashed #5a4a2c; background: #1a1712; color: #e7c78d; }
+.cap-suggestion div:nth-child(2) { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cap-suggestion strong { color: #f4eee5; font-size: 13px; }
+.cap-suggestion span { color: #cfc8c0; font-size: 12.5px; }
+.cap-suggestion code { color: #8e8791; font-size: 11.5px; }
+.cap-claude { margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid #2e2a33; background: #0f0e11; }
+.cap-claude-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 4px 12px; max-height: 300px; overflow: auto; margin-bottom: 8px; }
+.cap-check { display: flex; align-items: center; gap: 8px; padding: 4px 2px; min-width: 0; color: #ece6dd; font-size: 12.5px; }
+.cap-check code { color: #6f6973; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+@media (max-width: 760px) { .cap-row { flex-direction: column; } .cap-row select { max-width: none; width: 100%; } }
