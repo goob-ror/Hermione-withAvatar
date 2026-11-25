@@ -12,6 +12,9 @@ import { ThinkTagSplitter } from './thinkSplit'
 import { loadPhase1Settings } from '@/lib/storage/phase1-settings'
 import { invalidateModelCache } from './discovery'
 import { memoryPromptBlock } from '@/lib/memory/bank'
+import { hardLimit } from './hardLimits'
+import { judgeAction } from './judge'
+import { audit, permissionMode } from '@/lib/permissions/mode'
 import { lessonsPromptBlock } from '@/lib/feedback/store'
 import { answerText, IGNORED_TEXT, parseQuestion, SKIPPED_TEXT, type QuestionAnswer } from '@/lib/tools/ask'
 
@@ -146,6 +149,7 @@ export function buildSystemPrompt(opts: { nativeTools: boolean; mode?: SessionMo
     'Pictures: when the operator asks about things that have a look (animals and breeds, places, food, products, "show me…"), show pictures without being asked — call image_search (one call with `queries` for every item of a list), then paste its markdown. A list item that STARTS with a picture renders as a row with a thumbnail: "1. ![Samoyed](url) **Samoyed** — one short line". For a highlight set, put 2–4 pictures on consecutive lines; their alt text (or "title") becomes the caption under each. Use only image URLs a tool gave you — never invent or edit one.',
     'If a request is ambiguous in a way that changes the answer (e.g. "races of puppies" may mean breeds or racing), ask with ask_user before searching.',
     'Plans: for a task that takes 3 or more steps (research across sources, comparisons, multi-file work, building something), first call update_plan with your steps — a few words each, the first "in_progress" — then work through them, calling update_plan again (with the whole list) each time a step is done; you can send it in the same turn as your next tool call. Mark every step "completed" before the final answer. Skip plans for simple questions.',
+    'Workers and speed: independent read-only tool calls you make in the same turn run in parallel, so batch them (several web_search / web_fetch at once). For research with several independent parts — comparing products, checking multiple sources, one question per city or site — call delegate once per part in the same turn: fast worker models do them in parallel and return short reports, and the pages stay out of your context. Give each worker a complete, specific task. Do quick single lookups yourself; never delegate anything needing files, the shell, the live browser or the operator. You stay responsible for the final answer: check reports that disagree before relying on them.',
     "Memory: you keep a Memory Bank across chats (listed at the end). When the operator shares something lasting about themselves — a preference, their work or projects, people in their life, constraints like budget or location — save it right away with memory_save (one short third-person sentence; never passwords, keys or card numbers), without asking. Don't save one-off task details or things already remembered. Use what you remember naturally to tailor answers, without reciting it. If they ask you to forget something, use memory_forget. If a question may relate to their notes, search them with notes_search.",
   ].join('\n')
 
@@ -411,6 +415,7 @@ async function executeCall(session: Session, call: ToolCall, native: boolean, em
       sessionId: session.id,
       mode: session.mode,
       emit,
+      callId: call.callId,
       rtkEnabled: settings.rtkEnabled,
       rtkLevel: settings.rtkLevel,
     })
@@ -462,8 +467,76 @@ export function toolArgs(def: ToolDef, args: Record<string, any> | undefined): R
 }
 
 /**
+ * The permission mode decides an approval-gated call (lib/permissions/mode.ts):
+ * 'allowed' (run it), 'blocked' (hard limit), or why the operator must be asked
+ * ('' in Ask mode). Every decision taken without the operator is audited.
+ */
+async function decideWithoutOperator(session: Session, call: ToolCall, emit: Emit): Promise<'allowed' | 'blocked' | string> {
+  const mode = permissionMode()
+  const args = JSON.stringify(call.args ?? {})
+  const limit = hardLimit(call.tool, call.args ?? {})
+  if (limit?.level === 'block') {
+    audit({ sessionId: session.id, tool: call.tool, args, mode, decision: 'blocked', by: 'hard-limit', reason: limit.reason })
+    emit({ type: 'auto_decision', callId: call.callId, tool: call.tool, decision: 'blocked', by: 'hard-limit', reason: limit.reason })
+    return 'blocked'
+  }
+  if (mode === 'ask') return ''
+  if (limit) {
+    audit({ sessionId: session.id, tool: call.tool, args, mode, decision: 'asked', by: 'hard-limit', reason: limit.reason })
+    return `always asks: ${limit.reason}`
+  }
+  if (mode === 'off') {
+    audit({ sessionId: session.id, tool: call.tool, args, mode, decision: 'allowed', by: 'off', reason: 'permissions are off' })
+    emit({ type: 'auto_decision', callId: call.callId, tool: call.tool, decision: 'allowed', by: 'off', reason: 'Permissions are off' })
+    return 'allowed'
+  }
+  // Auto: the judge model decides allow / ask.
+  const operatorMessage = [...session.messages].reverse().find((m) => m.role === 'user')?.content ?? ''
+  const recentTools = session.messages.filter((m) => m.role === 'tool' && m.tool_name).map((m) => m.tool_name as string)
+  const v = await judgeAction({ tool: call.tool, args: call.args ?? {}, operatorMessage, recentTools })
+  audit({ sessionId: session.id, tool: call.tool, args, mode, decision: v.decision === 'allow' ? 'allowed' : 'asked', by: 'judge', reason: v.reason, model: v.model })
+  if (v.decision === 'allow') {
+    emit({ type: 'auto_decision', callId: call.callId, tool: call.tool, decision: 'allowed', by: 'judge', reason: v.reason })
+    return 'allowed'
+  }
+  return `the judge asked you: ${v.reason}`
+}
+
+/**
+ * Read-only tools that may run at the same time as each other: they don't
+ * touch the shared live browser, files on disk, the terminal or the operator.
+ */
+export const PARALLEL_SAFE = new Set([
+  'web_search', 'web_fetch', 'site_inspect', 'image_search', 'video_search', 'video_inspect',
+  'fs_read', 'fs_list', 'notes_search', 'notes_read', 'get_time', 'get_calendar', 'delegate',
+])
+/** At most this many tool calls run at once. */
+export const MAX_PARALLEL = 4
+
+/** Run `fns` with at most `limit` in flight; results in input order. */
+export async function inBatches<T>(fns: (() => Promise<T>)[], limit = MAX_PARALLEL): Promise<T[]> {
+  const out: T[] = new Array(fns.length)
+  let next = 0
+  const lane = async () => {
+    while (next < fns.length) {
+      const i = next++
+      out[i] = await fns[i]()
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, fns.length) }, lane))
+  return out
+}
+
+/** A call that can join a parallel batch: known, allowed here, read-only, valid input. */
+function parallelOk(session: Session, call: ToolCall): boolean {
+  const def = TOOL_MAP[call.tool]
+  return !!def && PARALLEL_SAFE.has(call.tool) && def.tier === 'auto' && !def.needsApproval && isToolAllowed(call.tool, session.mode) && !inputProblem(def, call)
+}
+
+/**
  * Walk the calls in order. Returns true when the loop must halt because a
- * `confirm` tool is waiting for the operator.
+ * `confirm` tool is waiting for the operator. Consecutive read-only calls run
+ * in parallel (up to MAX_PARALLEL); their results go back in the original order.
  */
 async function executeQueue(
   session: Session,
@@ -473,6 +546,43 @@ async function executeQueue(
 ): Promise<boolean> {
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i]
+
+    // A run of 2+ read-only calls: start them together.
+    if (parallelOk(session, call) && i + 1 < calls.length && parallelOk(session, calls[i + 1])) {
+      let end = i
+      while (end + 1 < calls.length && parallelOk(session, calls[end + 1])) end++
+      const batch = calls.slice(i, end + 1)
+      for (const c of batch) {
+        const d = TOOL_MAP[c.tool]
+        emit({ type: 'tool_call', callId: c.callId, tool: c.tool, args: c.args, tier: 'auto', group: d.group })
+      }
+      const settings = loadPhase1Settings()
+      const results = await inBatches(
+        batch.map((c) => async () => {
+          const d = TOOL_MAP[c.tool]
+          try {
+            const r = await d.run(toolArgs(d, c.args), {
+              sessionId: session.id,
+              mode: session.mode,
+              emit,
+              callId: c.callId,
+              rtkEnabled: settings.rtkEnabled,
+              rtkLevel: settings.rtkLevel,
+            })
+            return { ok: r.ok, output: r.output }
+          } catch (err: any) {
+            return { ok: false, output: `tool threw: ${err?.message ?? String(err)}` }
+          }
+        }),
+      )
+      batch.forEach((c, k) => {
+        emit({ type: 'tool_result', callId: c.callId, tool: c.tool, ok: results[k].ok, output: clamp(results[k].output) })
+        pushToolMessage(session, c, results[k].output, native)
+      })
+      i = end
+      continue
+    }
+
     const def = TOOL_MAP[call.tool]
     // A tool may decide per call (page_act: reading is free, clicking asks).
     const tier = !def ? 'auto' : def.needsApproval ? (def.needsApproval(call.args) ? 'confirm' : 'auto') : def.tier
@@ -513,6 +623,17 @@ async function executeQueue(
 
     // Don't ask the operator to approve a call that can't run anyway.
     if (def && tier === 'confirm' && !inputProblem(def, call)) {
+      const decided = await decideWithoutOperator(session, call, emit)
+      if (decided === 'blocked') {
+        const output = `${call.tool} was NOT run: it is blocked by a hard limit and can't be approved. Tell the operator what you wanted to do and why, and suggest a safer way.`
+        emit({ type: 'tool_result', callId: call.callId, tool: call.tool, ok: false, output })
+        pushToolMessage(session, call, output, native)
+        continue
+      }
+      if (decided === 'allowed') {
+        await executeCall(session, call, native, emit)
+        continue
+      }
       session.pending = {
         kind: 'approval',
         callId: call.callId,
@@ -528,7 +649,7 @@ async function executeQueue(
         tool: call.tool,
         args: call.args,
         group,
-        reason: `${call.tool} is a ${group} action and needs your approval`,
+        reason: `${call.tool} is a ${group} action and needs your approval${decided ? ` (${decided})` : ''}`,
       })
       return true
     }

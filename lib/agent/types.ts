@@ -16,6 +16,8 @@ export interface ToolContext {
   /** 'chat' or 'forge' (Content Forge) — the workspace this run belongs to. */
   mode?: 'chat' | 'forge'
   emit: Emit
+  /** The call being run (lets a tool tag its own sub-steps, e.g. a worker's). */
+  callId?: string
   rtkEnabled?: boolean
   rtkLevel?: 'low' | 'medium' | 'high'
   lazyDevMode?: 'auto' | 'always' | 'never'
@@ -74,6 +76,8 @@ export type AgentEvent =
   | { type: 'token'; delta: string }
   | { type: 'tool_call'; callId: string; tool: string; args: Record<string, any>; tier: ToolTier; group: ToolGroup }
   | { type: 'tool_result'; callId: string; tool: string; ok: boolean; output: string }
+  /** An approval-gated call decided without the operator (Auto judge, permissions Off, or a hard limit). */
+  | { type: 'auto_decision'; callId: string; tool: string; decision: 'allowed' | 'blocked'; by: 'judge' | 'off' | 'hard-limit'; reason: string }
   | { type: 'approval_required'; callId: string; tool: string; args: Record<string, any>; reason: string; group: ToolGroup }
   /** A page finished loading into the preview panel. */
   | { type: 'preview_ready'; url: string; title: string; textLength: number }

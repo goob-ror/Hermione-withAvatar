@@ -65,7 +65,8 @@ import { WelcomeScreen } from '@/components/WelcomeScreen'
 import { AvatarRemark } from '@/components/AvatarRemark'
 import { ParticleNetwork } from '@/components/ParticleNetwork'
 import { ReplyFeedback } from '@/components/ReplyFeedback'
-import { VoiceModelPicker } from '@/components/VoiceModelPicker'
+import { HelperModels } from '@/components/HelperModels'
+import { PermissionMode } from '@/components/PermissionMode'
 import { StartupConfigModal, type StartupConfig } from '@/components/StartupConfigModal'
 import {
   FolderModal,
@@ -95,6 +96,8 @@ interface ToolCardData {
   state: ToolState
   output?: string
   ok?: boolean
+  /** Decided without you: Auto judge, permissions Off, or a hard limit. */
+  note?: { decision: 'allowed' | 'blocked'; by: 'judge' | 'off' | 'hard-limit'; reason: string }
 }
 
 interface ApprovalData {
@@ -186,6 +189,15 @@ function ActionCard({ card }: { card: ToolCardData }) {
         <StatusPill state={card.state} kind={card.group} />
         {open ? <ChevronDown className="size-4 text-zinc-600" /> : <ChevronRight className="size-4 text-zinc-600" />}
       </button>
+      {card.note && (
+        <div className={`auto-note is-${card.note.decision}`}>
+          {card.note.decision === 'blocked'
+            ? `Blocked by a hard limit: ${card.note.reason}`
+            : card.note.by === 'judge'
+              ? `Auto-approved by the judge: ${card.note.reason}`
+              : 'Ran without asking (permissions are off)'}
+        </div>
+      )}
       {open && (
         <div className="action-detail">
           <code>
@@ -310,6 +322,8 @@ export default function Page() {
     defaultUIState.companionState
   )
   const [isStreaming, setIsStreaming] = useState(false)
+  /** Permission mode (Ask / Auto / Off); Off shows a banner above the composer. */
+  const [permMode, setPermMode] = useState<'ask' | 'auto' | 'off'>('ask')
   const [sessionId, setSessionId] = useState(() => {
     if (typeof window !== 'undefined') {
       const cached = getCachedLastSession()
@@ -441,7 +455,20 @@ export default function Page() {
     })
   const stopRun = () => abortRef.current?.abort()
   /** Hermione's voice: waiting lines on long runs, a spoken summary of each answer. */
-  const voice = useRunVoice()
+  // Her thinking lines are spoken and shown under the avatar (one stream, so they match).
+  const voice = useRunVoice({
+    onRemark: (text, activity) => {
+      const look =
+        activity === 'thinking'
+          ? { pose: 'tilted_head', mood: 'thoughtful' }
+          : activity === 'delegate'
+            ? { pose: 'relaxed', mood: 'patient' }
+            : /^(web_|page_|site_|image_|video_)/.test(activity)
+              ? { pose: 'forward_alert', mood: 'concentrating' }
+              : { pose: 'squint', mood: 'processing' }
+      if (abortRef.current !== null) setActiveRemark({ text, ...look, durationMs: 6000 })
+    },
+  })
   /** The message Retry answers again: your most recent one. */
   const lastUserText = (() => {
     for (let k = messages.length - 1; k >= 0; k--) if (messages[k].role === 'user') return messages[k].text
@@ -978,10 +1005,10 @@ export default function Page() {
       return
     }
 
-    // The agent is writing into the shared terminal — surface it and open the panel.
+    // The agent is writing into the shared terminal. If the panel is closed it
+    // stays closed (the bar shows the command); the operator opens it when they want.
     if (event.type === 'terminal_command') {
       setLastAgentCommand({ command: event.command, at: Date.now() })
-      setIsTerminalOpen(true)
       setCompanionState('focused')
       return
     }
@@ -1058,6 +1085,11 @@ export default function Page() {
               state: event.tier === 'confirm' ? 'pending' : 'running',
             },
           ]
+          break
+        case 'auto_decision':
+          msg.toolCards = (msg.toolCards || []).map((card) =>
+            card.callId === event.callId ? { ...card, note: { decision: event.decision, by: event.by, reason: event.reason } } : card,
+          )
           break
         case 'tool_result':
           if (event.tool === 'ask_user' || event.tool === 'update_plan') break
@@ -1903,6 +1935,11 @@ export default function Page() {
                 </button>
               )}
             </div>
+            {permMode === 'off' && (
+              <div className="perm-off-banner" role="status">
+                Permissions are off: Hermione runs writes, commands and website actions without asking. Hard limits still apply.
+              </div>
+            )}
             <div className="composer-meta flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {/* Model Selector Dropdown */}
@@ -1955,6 +1992,8 @@ export default function Page() {
                   <ChevronDown className="size-3 text-zinc-500 absolute right-2 pointer-events-none" />
                 </div>
 
+                <PermissionMode onMode={setPermMode} />
+
                 {/* Thinking effort dropdown */}
                 <div className="relative flex items-center">
                   <select
@@ -1985,7 +2024,7 @@ export default function Page() {
                   {voice.enabled ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
                   Voice
                 </button>
-                {voice.enabled && <VoiceModelPicker groups={modelGroups} />}
+                <HelperModels groups={modelGroups} />
                 <TokenCounter chat={chatUsage} today={todayUsage} />
                 <span>
                   Enter to send <kbd>↵</kbd>

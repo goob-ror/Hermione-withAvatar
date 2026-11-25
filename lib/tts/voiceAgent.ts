@@ -1,5 +1,5 @@
 import { completeText } from '@/lib/agent/complete'
-import { activeProviderId, getProvider, listProviders, voiceModelSetting, type VoiceModelSetting } from '@/lib/agent/providers'
+import { chosenHelper, fastOpts, GEMINI_FLASH_LITE, geminiLite, mainModel } from '@/lib/agent/helpers'
 import { addressAsSir, ALLOWED_TAGS, expressive, sanitizeTags, stripTags, upbeat } from './expression'
 
 /**
@@ -12,23 +12,15 @@ import { addressAsSir, ALLOWED_TAGS, expressive, sanitizeTags, stripTags, upbeat
  * Waiting remarks and Read aloud stay on the instant deterministic rules
  * (expression.ts). Any failure, timeout or doubtful output → the rules.
  *
- * Which model: the saved choice (Settings → voice model, .hermione/providers.json
- * "voice"), else HERMIONE_VOICE_MODEL (+ HERMIONE_VOICE_PROVIDER), else your
- * Google Gemini provider with gemini-3.1-flash-lite, else the main chat model.
- * "off" (saved, or HERMIONE_VOICE_MODEL=off) = rules only.
+ * Which model: the "voice" helper (lib/agent/helpers.ts) — the saved choice,
+ * else HERMIONE_VOICE_MODEL, else Gemini 3.1 Flash Lite, else the main chat
+ * model. "off" = rules only. One model, no fallback chain: a summary can't
+ * wait for several timeouts.
  */
 
 export type VoiceStyle = 'greeting' | 'summary'
 
-export const DEFAULT_GEMINI_VOICE_MODEL = 'gemini-3.1-flash-lite'
-const isGemini = (baseUrl: string) => /generativelanguage\.googleapis\.com/i.test(baseUrl)
-const providerBase = (id: string) => {
-  try {
-    return getProvider(id).baseUrl
-  } catch {
-    return ''
-  }
-}
+export const DEFAULT_GEMINI_VOICE_MODEL = GEMINI_FLASH_LITE
 
 export interface VoiceModel {
   providerId: string
@@ -38,24 +30,14 @@ export interface VoiceModel {
 }
 
 /** The model the voice subagent uses right now, or null when it is off. */
-export function voiceModel(setting: VoiceModelSetting | undefined = voiceModelSetting(), env = process.env): VoiceModel | null {
-  if (setting && 'off' in setting) return null
-  const providers = listProviders()
-  if (setting && providers.some((p) => p.id === setting.providerId)) return { ...setting, source: 'saved' }
-
-  const envModel = env.HERMIONE_VOICE_MODEL?.trim()
-  if (envModel && /^(?:off|0|false|no)$/i.test(envModel)) return null
-  if (envModel) {
-    const envProvider = env.HERMIONE_VOICE_PROVIDER?.trim()
-    const p = providers.find((x) => x.id === envProvider) ?? (isGemini(envModel) ? undefined : providers.find((x) => isGemini(x.baseUrl)))
-    return { providerId: p?.id ?? activeProviderId(), model: envModel, source: 'env' }
-  }
-
-  const gemini = providers.find((p) => isGemini(p.baseUrl))
-  if (gemini) return { providerId: gemini.id, model: DEFAULT_GEMINI_VOICE_MODEL, source: 'gemini' }
-
-  const main = getProvider(activeProviderId())
-  return main.defaultModel ? { providerId: main.id, model: main.defaultModel, source: 'main' } : null
+export function voiceModel(env: Record<string, string | undefined> = process.env): VoiceModel | null {
+  const chosen = chosenHelper('voice', env)
+  if (chosen === null) return null
+  if (chosen) return { providerId: chosen.providerId, model: chosen.model, source: chosen.source === 'saved' ? 'saved' : 'env' }
+  const g = geminiLite()
+  if (g) return { providerId: g.providerId, model: g.model, source: 'gemini' }
+  const m = mainModel()
+  return m ? { providerId: m.providerId, model: m.model, source: 'main' } : null
 }
 
 const PERSONA = [
@@ -137,7 +119,7 @@ export async function voiceLine(
       temperature: style === 'greeting' ? 0.8 : 0.5,
       timeoutMs: opts.timeoutMs ?? (style === 'greeting' ? 10_000 : 3_000),
       // A rewrite needs no deliberation: Gemini's thinking takes it from ~1 s to ~5 s.
-      ...(isGemini(providerBase(model.providerId)) ? { reasoningEffort: 'none' as const } : {}),
+      ...fastOpts({ ...model, source: 'default' }),
     })
     const line = cleanVoiceReply(out.text, original)
     if (!line) return fallback('the reply did not pass the checks')

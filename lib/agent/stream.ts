@@ -1,5 +1,4 @@
 import type { Emit } from './types'
-import { idleChatterLoop } from './idleChatter'
 
 /** Wrap an agent run in an NDJSON streaming Response. */
 export function agentStream(runner: (emit: Emit, signal: AbortSignal) => Promise<void>, requestSignal?: AbortSignal): Response {
@@ -20,23 +19,11 @@ export function agentStream(runner: (emit: Emit, signal: AbortSignal) => Promise
         }
       }
 
-      // Start idle chatter in parallel
-      const shouldStopChatter = { value: false }
-      const chatterTask = (async () => {
-        for await (const remark of idleChatterLoop(shouldStopChatter)) {
-          emit(remark as any)
-        }
-      })()
-
       try {
         await runner(emit, stop.signal)
       } catch (err: any) {
         emit({ type: 'error', message: err?.message ?? String(err) })
       } finally {
-        // Stop the chatter loop. Don't wait for its 2–8 s sleep: the answer is
-        // done, so close the stream now (the loop exits without emitting).
-        shouldStopChatter.value = true
-        void chatterTask.catch(() => {})
         try {
           controller.close()
         } catch {

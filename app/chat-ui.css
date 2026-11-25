@@ -863,3 +863,18 @@
 .mb-feedback .row button { margin-left: auto; color: #e7c78d; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
 @media (max-width: 760px) { .mb-lesson { grid-template-columns: 1fr; } }
 .mb-lesson-intro { margin-top: 10px; }
+
+/* Helper models menu (components/HelperModels.tsx) */
+.helper-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 60; width: 340px; max-width: calc(100vw - 32px); padding: 10px; border-radius: 10px; border: 1px solid #3a353f; background: #121115; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); display: flex; flex-direction: column; gap: 10px; }
+.helper-row { display: flex; flex-direction: column; gap: 6px; }
+.helper-row strong { display: block; color: #f4eee5; font-size: 12px; }
+.helper-row span { display: block; color: #8e8791; font-size: 11px; line-height: 1.35; }
+.helper-row .chain { color: #6f6973; font-family: ui-monospace, Consolas, monospace; font-size: 10px; margin-top: 2px; }
+.helper-row select { width: 100%; padding: 5px 7px; border-radius: 6px; border: 1px solid #2e2a33; background: #18161a; color: #dedbd7; font: 11px ui-monospace, Consolas, monospace; }
+.helper-error { color: #f0b4b4; font-size: 11px; }
+
+/* Permission modes */
+.auto-note { margin: 0 10px 8px; padding: 4px 8px; border-radius: 6px; font-size: 11.5px; border: 1px dashed; }
+.auto-note.is-allowed { color: #9cc3d9; border-color: #2f4757; background: rgba(128, 169, 193, 0.06); }
+.auto-note.is-blocked { color: #f0b4b4; border-color: #5a2a2a; background: rgba(90, 42, 42, 0.15); }
+.perm-off-banner { margin-bottom: 6px; padding: 5px 10px; border-radius: 8px; border: 1px solid #5a352a; background: #231713; color: #f0b49a; font-size: 11.5px; }

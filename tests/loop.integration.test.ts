@@ -14,7 +14,7 @@ process.env.HERMIONE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'hermion
  * A scripted OpenAI-compatible provider. Each test queues the replies it
  * should send, in order, and inspects the requests Hermione made.
  */
-type Reply = { content?: string; toolCall?: { name: string; args: unknown }; empty?: boolean }
+type Reply = { content?: string; toolCall?: { name: string; args: unknown }; toolCalls?: { name: string; args: unknown }[]; empty?: boolean }
 let queue: Reply[] = []
 let requests: any[] = []
 let server: http.Server
@@ -27,7 +27,12 @@ function sse(res: http.ServerResponse, reply: Reply) {
     // Split into small chunks so tags get cut across them.
     for (let i = 0; i < reply.content.length; i += 5) send({ choices: [{ delta: { content: reply.content.slice(i, i + 5) } }] })
   }
-  if (reply.toolCall) {
+  if (reply.toolCalls) {
+    reply.toolCalls.forEach((c, index) =>
+      send({ choices: [{ delta: { tool_calls: [{ index, id: `call_${index + 1}`, type: 'function', function: { name: c.name, arguments: c.args } }] } }] }),
+    )
+    send({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] })
+  } else if (reply.toolCall) {
     const args = reply.toolCall.args
     send({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: reply.toolCall.name, arguments: args } }] } }] })
     send({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] })
@@ -70,6 +75,22 @@ describe('agent loop tool I/O (integration)', () => {
   afterAll(() => {
     server.close()
     fs.rmSync(configDir(), { recursive: true, force: true })
+  })
+
+  it('runs several read-only calls from one turn together, and returns results in order', async () => {
+    queue = [
+      { toolCalls: [{ name: 'get_time', args: '{}' }, { name: 'get_time', args: '{"timezone":"UTC"}' }, { name: 'get_time', args: '{}' }] },
+      { content: 'All three done.' },
+    ]
+    requests = []
+    const { events } = await run('what time is it, three ways')
+    const kinds = events.filter((e) => e.type === 'tool_call' || e.type === 'tool_result').map((e) => e.type)
+    // All three start before any finishes: one parallel batch.
+    expect(kinds).toEqual(['tool_call', 'tool_call', 'tool_call', 'tool_result', 'tool_result', 'tool_result'])
+    // The model gets the three results back in its own call order.
+    const toolMsgs = requests[1].messages.filter((m: any) => m.role === 'tool')
+    expect(toolMsgs.map((m: any) => m.tool_call_id)).toEqual(['call_1', 'call_2', 'call_3'])
+    expect(events.find((e) => e.type === 'final').text).toBe('All three done.')
   })
 
   it('keeps <thinking> out of the visible answer', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { plainSpeech, spokenSummary, waitingLine } from '@/lib/voice/summary'
+import { plainSpeech, spokenSummary } from '@/lib/voice/summary'
 import { chunkText, speechChunks } from '@/lib/voice/speaker'
 import { cleanForSpeech, pcmToWav } from '@/lib/tts/audio'
 
@@ -54,15 +54,6 @@ describe('spoken summary', () => {
 
   it('plain speech drops pictures, tags and links but keeps link text', () => {
     expect(plainSpeech('See ![x](https://a.b/c.png) [[Tag]] [the docs](https://d.e) now')).toBe('See the docs now')
-  })
-})
-
-describe('waiting lines', () => {
-  it('fit what she is doing and vary', () => {
-    expect(waitingLine('image_search', 0)).toMatch(/pictures/)
-    expect(waitingLine('web_search', 0)).not.toBe(waitingLine('web_search', 1))
-    expect(waitingLine('some_new_tool', 0)).toMatch(/thinking|moment|Nearly/)
-    expect(waitingLine(undefined, 0)).toBeTruthy()
   })
 })
 

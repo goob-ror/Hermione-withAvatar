@@ -52,17 +52,31 @@ export interface ProviderPublic {
 }
 
 /**
- * The model behind Hermione's voice subagent (lib/tts/voiceAgent.ts), separate
- * from the chat model. Absent = automatic; `off` = deterministic rules only.
+ * Hermione's helper models, separate from the main chat model (lib/agent/helpers.ts):
+ *   voice  — writes her spoken lines (lib/tts/voiceAgent.ts)
+ *   worker — read-only research sub-agents she delegates to (lib/agent/worker.ts)
+ *   judge  — reviews risky actions in the "Auto" permission mode (lib/agent/judge.ts)
+ * Absent = automatic; `off` = that helper is not used.
  */
-export type VoiceModelSetting = { providerId: string; model: string } | { off: true }
+export const HELPER_ROLES = ['voice', 'worker', 'judge'] as const
+export type HelperRole = (typeof HELPER_ROLES)[number]
+export type HelperSetting = { providerId: string; model: string } | { off: true }
+/** @deprecated the voice helper's setting; use HelperSetting */
+export type VoiceModelSetting = HelperSetting
 
 interface ProviderFile {
   version: 1
   activeId: string
   providers: Provider[]
-  voice?: VoiceModelSetting
+  helpers?: Partial<Record<HelperRole, HelperSetting>>
 }
+
+const parseHelper = (v: any): HelperSetting | undefined =>
+  v?.off === true
+    ? { off: true }
+    : typeof v?.providerId === 'string' && typeof v?.model === 'string' && v.model
+      ? { providerId: v.providerId, model: v.model }
+      : undefined
 
 export const KEY_MASK = '••••••••'
 
@@ -99,18 +113,17 @@ function readRaw(): ProviderFile {
     const parsed = JSON.parse(text)
     const providers: Provider[] = Array.isArray(parsed?.providers) ? parsed.providers : []
     const clean = providers.filter((p) => p && typeof p.id === 'string' && typeof p.baseUrl === 'string')
-    const v = parsed?.voice
-    const voice: VoiceModelSetting | undefined =
-      v?.off === true
-        ? { off: true }
-        : typeof v?.providerId === 'string' && typeof v?.model === 'string' && v.model
-          ? { providerId: v.providerId, model: v.model }
-          : undefined
+    const helpers: Partial<Record<HelperRole, HelperSetting>> = {}
+    for (const role of HELPER_ROLES) {
+      // (An older version stored the voice helper as top-level "voice".)
+      const h = parseHelper(parsed?.helpers?.[role] ?? (role === 'voice' ? parsed?.voice : undefined))
+      if (h) helpers[role] = h
+    }
     return {
       version: 1,
       activeId: typeof parsed?.activeId === 'string' ? parsed.activeId : defaultProvider().id,
       providers: clean.map((p) => ({ ...p, kind: p.kind === 'ollama' ? 'ollama' : 'openai' })),
-      ...(voice ? { voice } : {}),
+      ...(Object.keys(helpers).length ? { helpers } : {}),
     }
   } catch {
     return { version: 1, activeId: defaultProvider().id, providers: [] }
@@ -265,21 +278,28 @@ export function setActiveProvider(id: string): Provider {
   return provider
 }
 
-/** The saved voice-model choice (undefined = automatic). */
-export function voiceModelSetting(): VoiceModelSetting | undefined {
-  return readRaw().voice
+/** A helper's saved model (undefined = automatic). */
+export function helperSetting(role: HelperRole): HelperSetting | undefined {
+  return readRaw().helpers?.[role]
 }
 
-/** Save the voice-model choice; null goes back to automatic. */
-export function setVoiceModel(setting: VoiceModelSetting | null) {
+/** Save a helper's model; null goes back to automatic. */
+export function setHelperModel(role: HelperRole, setting: HelperSetting | null) {
   const file = readRaw()
   if (setting && !('off' in setting) && !listProviders().some((p) => p.id === setting.providerId)) {
     throw new Error(`unknown provider: ${setting.providerId}`)
   }
-  if (setting) file.voice = setting
-  else delete file.voice
+  const helpers = { ...(file.helpers ?? {}) }
+  if (setting) helpers[role] = setting
+  else delete helpers[role]
+  file.helpers = helpers
   writeRaw(file)
 }
+
+/** @deprecated use helperSetting('voice') */
+export const voiceModelSetting = () => helperSetting('voice')
+/** @deprecated use setHelperModel('voice', …) */
+export const setVoiceModel = (setting: HelperSetting | null) => setHelperModel('voice', setting)
 
 export function deleteProvider(id: string): boolean {
   const file = readRaw()

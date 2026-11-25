@@ -130,6 +130,11 @@ export interface Candidate {
   model: string
 }
 
+/** A model's family ("claude", "gpt", "gemini" …); gateway aliases like "Hermione" have none. */
+export function familyOf(id: string): string {
+  return id.toLowerCase().match(/\b(claude|gpt|gemini|gemma|llama|qwen|glm|deepseek|minimax|mistral|grok)/)?.[1] ?? ''
+}
+
 /** Cheap/fast first — whole name segments only ("gemini" must not match "mini"). */
 function cheapRank(id: string): number {
   return /(^|[-_.:/])(lite|mini|flash|haiku|small|nano|[1-9]b)([-_.:]|$)/i.test(id) ? 0 : 1
@@ -147,10 +152,13 @@ export async function nextCandidate(failed: { providerId: string; model: string 
 
   const same = groups.find((g) => g.providerId === failed.providerId)
   if (same?.online && !exhaustedMark(failed.providerId, '*')) {
+    // Stay in the same model family first (Claude Sonnet → Claude Haiku before GPT…).
+    // A gateway alias ("Hermione" on 9router is Claude Sonnet) counts as Claude, the preferred family.
+    const family = familyOf(failed.model) || 'claude'
     const pick = same.models
       .map((m) => m.id)
       .filter((id) => usable(same.providerId, id))
-      .sort((a, b) => cheapRank(a) - cheapRank(b))[0]
+      .sort((a, b) => Number(familyOf(b) === family) - Number(familyOf(a) === family) || cheapRank(a) - cheapRank(b))[0]
     if (pick) return { providerId: same.providerId, providerLabel: same.label, model: pick }
   }
 

@@ -87,25 +87,3 @@ export function spokenSummary(md: string, max = 300): string {
   if (out.length > max) out = `${out.slice(0, max).replace(/\s+\S*$/, '')}…`
   return out
 }
-
-/** Lines for when a task runs long, by what she is doing. */
-const WAITING: Record<string, string[]> = {
-  web_search: ['Still searching the web for you.', 'Digging through search results.'],
-  image_search: ['Finding some pictures for you.', 'Picking out the best pictures.'],
-  web_fetch: ['Reading through the page.', 'Still reading, almost there.'],
-  page_read: ['Reading through the page.', 'Still reading, almost there.'],
-  site_inspect: ['Looking over the site.'],
-  page_open: ['Working in the browser.', 'Still on the page, one moment.'],
-  page_act: ['Working in the browser.', 'Still on the page, one moment.'],
-  shell_run: ['Running that command, nearly done.', 'Still running, hang on.'],
-  terminal_run: ['Running that in the terminal.', 'Still running, hang on.'],
-  fs_read: ['Going through your files.'],
-  fs_list: ['Going through your files.'],
-  fs_write: ['Writing that file.'],
-  thinking: ['Still thinking this one through.', 'Give me a moment, this is a big one.', 'Nearly there, putting it together.'],
-}
-
-export function waitingLine(activity: string | undefined, nth: number): string {
-  const lines = WAITING[activity ?? 'thinking'] ?? WAITING.thinking
-  return lines[nth % lines.length]
-}

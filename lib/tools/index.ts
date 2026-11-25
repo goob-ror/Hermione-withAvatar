@@ -12,6 +12,7 @@ import { memoryForget, memorySave, notesRead, notesSearch } from './memory'
 import { updatePlan } from './plan'
 import { videoInspect, videoSearch } from './video'
 import { clipRender, clipUpload } from './clip'
+import { delegate } from './delegate'
 
 export const TOOLS: ToolDef[] = [
   fsList,
@@ -41,6 +42,7 @@ export const TOOLS: ToolDef[] = [
   videoInspect,
   clipRender,
   clipUpload,
+  delegate,
 ]
 
 export const TOOL_MAP: Record<string, ToolDef> = Object.fromEntries(TOOLS.map((t) => [t.name, t]))
@@ -64,6 +66,7 @@ const FORGE_TOOLS = new Set([
   'update_plan',
   'video_search', 'video_inspect',
   'clip_render', 'clip_upload',
+  'delegate',
 ])
 
 export type ToolMode = 'chat' | 'forge'

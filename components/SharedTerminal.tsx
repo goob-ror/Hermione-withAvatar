@@ -14,6 +14,10 @@ interface Line {
   text: string
 }
 
+const TERMINAL_H_KEY = 'hermione-terminal-height'
+const TERMINAL_DEFAULT_H = 280
+export const clampHeight = (h: number) => Math.min(600, Math.max(160, Math.round(h)))
+
 export function SharedTerminal({
   sessionId,
   open,
@@ -42,6 +46,40 @@ export function SharedTerminal({
   
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const pinnedRef = useRef(true)
+
+  // Fixed, resizable height (drag the top edge); output scrolls inside it.
+  const [height, setHeight] = useState(TERMINAL_DEFAULT_H)
+  useEffect(() => {
+    try {
+      const saved = Number(localStorage.getItem(TERMINAL_H_KEY))
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- read once after mount (SSR-safe)
+      if (saved) setHeight(clampHeight(saved))
+    } catch {
+      /* storage blocked */
+    }
+  }, [])
+  const startResize = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const startY = e.clientY
+    const startH = height
+    let last = startH
+    const move = (ev: MouseEvent) => {
+      // Docked at the bottom, dragging the top edge UP makes it taller.
+      last = clampHeight(startH + (startY - ev.clientY))
+      setHeight(last)
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      try {
+        localStorage.setItem(TERMINAL_H_KEY, String(last))
+      } catch {
+        /* storage blocked */
+      }
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+  }
 
   /* ---------------------------------------------------------------- */
   /* Dragging                                                           */
@@ -264,14 +302,22 @@ export function SharedTerminal({
   const agentActive = lastAgentCommand && Date.now() - lastAgentCommand.at < 15000
 
   if (!open) {
+    // Closed stays closed: when Hermione runs something, the bar just shows it.
     return (
       <button
         onClick={() => onToggle(true)}
         className="flex items-center gap-2 w-full px-3 py-2 text-[11px] font-mono text-zinc-400 hover:text-[#d2b278] border-t border-[#222026] bg-[#111013] transition-colors"
+        title={lastAgentCommand ? `Hermione ran: ${lastAgentCommand.command}` : 'Open the shared terminal'}
       >
         <TerminalIcon className="size-3.5" />
         Shared terminal
-        <ChevronUp className="size-3 ml-auto" />
+        {lastAgentCommand && (
+          <span className="flex items-center gap-1.5 min-w-0 text-[#80a9c1]">
+            {agentActive && <span className="size-1.5 rounded-full bg-[#80a9c1] animate-pulse flex-none" />}
+            <span className="truncate max-w-[40vw]">Hermione ran: {lastAgentCommand.command}</span>
+          </span>
+        )}
+        <ChevronUp className="size-3 ml-auto flex-none" />
       </button>
     )
   }
@@ -286,19 +332,28 @@ export function SharedTerminal({
               left: `${position.x}px`,
               top: `${position.y}px`,
               width: '680px',
+              height: `${height}px`,
               zIndex: 9999,
             }
           : {
               position: 'relative',
+              height: `${height}px`,
               zIndex: 50,
             }
       }
       className="border border-[#3a353f] bg-[#0d0c0e] flex flex-col shadow-2xl rounded-lg overflow-hidden"
     >
+      {/* Resize: drag this top edge */}
+      <div
+        onMouseDown={startResize}
+        className="h-1.5 -mb-1.5 cursor-ns-resize hover:bg-[#c5a871]/30 relative z-10 flex-none"
+        title="Drag to resize"
+        aria-hidden
+      />
       {/* Header / Drag Handle */}
       <div
         onMouseDown={startDrag}
-        className="flex items-center gap-2 px-3 py-1.5 border-b border-[#222026] bg-[#111013] cursor-grab active:cursor-grabbing select-none"
+        className="flex-none flex items-center gap-2 px-3 py-1.5 border-b border-[#222026] bg-[#111013] cursor-grab active:cursor-grabbing select-none"
       >
         <GripHorizontal className="size-4 text-zinc-500" />
         <TerminalIcon className="size-3.5 text-[#b69a72]" />
@@ -343,15 +398,14 @@ export function SharedTerminal({
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 overflow-y-auto px-3 py-2 font-mono text-[11.5px] leading-[1.5] bg-[#0b0a0c]"
-        style={{ height: '240px' }}
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-2 font-mono text-[11.5px] leading-[1.5] bg-[#0b0a0c]"
       >
         {rendered}
         {!lines.length && <span className="text-[#5d5a60]">type a command — the agent sees it too</span>}
       </div>
 
       {/* Input */}
-      <div className="flex items-center gap-2 px-3 py-2 border-t border-[#222026] bg-[#111013]">
+      <div className="flex-none flex items-center gap-2 px-3 py-2 border-t border-[#222026] bg-[#111013]">
         <span className="text-[11.5px] font-mono text-[#c5a871]">$</span>
         <input
           value={input}

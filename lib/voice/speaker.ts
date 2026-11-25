@@ -392,7 +392,11 @@ export async function greet(mode: 'chat' | 'forge', name: string, fallback: stri
   if (await voiceAvailable()) await speak(fallback, 'greeting')
 }
 
-export async function speak(text: string, id = 'auto'): Promise<void> {
+/**
+ * `localOnly`: only Hermione's own voice — if VoxCPM2 can't say it, stay
+ * silent rather than switch to the browser's voice (used for thinking lines).
+ */
+export async function speak(text: string, id = 'auto', opts: { localOnly?: boolean } = {}): Promise<void> {
   stopSpeaking()
   const gen = generation
   setSpeaking(id)
@@ -413,14 +417,23 @@ export async function speak(text: string, id = 'auto'): Promise<void> {
         if (gen !== generation) return
         if (i + 1 < chunks.length) next = fetchWav(chunks[i + 1])
         if (blob) await playBlob(blob, gen)
-        else await browserSpeak(chunks[i], gen) // voice busy or failed: don't skip the line
+        else if (!opts.localOnly) await browserSpeak(chunks[i], gen) // voice busy or failed: don't skip the line
       }
-    } else {
+    } else if (!opts.localOnly) {
       for (const c of chunks) await browserSpeak(c, gen)
     }
   } finally {
     if (gen === generation && speakingId === id) setSpeaking(null)
   }
+}
+
+/**
+ * A thinking line: only in her own voice, never over something already being
+ * said (a summary, a Read aloud, or the previous thinking line).
+ */
+export function speakThinking(text: string) {
+  if (!voiceEnabled() || !text.trim() || speakingId) return
+  void speak(text, 'thinking', { localOnly: true })
 }
 
 /**
